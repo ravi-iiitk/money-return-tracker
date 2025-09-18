@@ -1,10 +1,14 @@
-// =================== Workspace-based persistence (resilient) ===================
+// =================== Workspace-based persistence (race-safe) ===================
 let state = { employees: [], transactions: [] };
 let auth = null, db = null;
-let workspaceId = null;      // e.g. "resy-2025"
-const WS_KEY = "moneytracker_workspace";
 
-// ---- tiny logger banner so the app never "goes silent"
+let workspaceId = null;                // e.g. "resy-2025"
+const WS_KEY = "moneytracker_workspace";
+let wsLoadToken = 0;                   // prevents late-load overwrites
+let readyPromise = Promise.resolve();  // awaited by actions
+let controlsDisabled = true;
+
+// ---- Small warning banner so app never goes silent
 function showWarn(msg){
   console.warn(msg);
   if (!document.getElementById("__app_warn")) {
@@ -19,13 +23,9 @@ function showWarn(msg){
   setTimeout(()=>{ el.style.display="none"; }, 6000);
 }
 
-// ---- global guards: never let errors kill all listeners
-window.addEventListener("error", (e)=> {
-  showWarn("Unexpected error: " + (e?.message || e));
-});
-window.addEventListener("unhandledrejection", (e)=> {
-  showWarn("Unexpected async error: " + (e?.reason?.message || e?.reason || e));
-});
+// ---- global guards
+window.addEventListener("error", (e)=> showWarn("Unexpected error: " + (e?.message || e)));
+window.addEventListener("unhandledrejection", (e)=> showWarn("Async error: " + (e?.reason?.message || e?.reason || e)));
 
 // ---------- Firestore doc for this workspace ----------
 function workspaceDoc(){
@@ -33,30 +33,64 @@ function workspaceDoc(){
   return db.collection("workspaces").doc(workspaceId);
 }
 
+// ---------- Enable/disable all action buttons until workspace is ready ----------
+function setControlsEnabled(enabled){
+  controlsDisabled = !enabled;
+  const ids = [
+    "addEmployeeBtn","importEmpBtn","importOutBtn","importRetBtn",
+    "exportJsonBtn","exportEmpBtn","exportOutBtn","exportRetBtn",
+    "clearOutgoingBtn","clearIncomingBtn","clearAllBtn",
+    "processBtn","dropZone","fileInput"
+  ];
+  ids.forEach(id=>{
+    const el = document.getElementById(id);
+    if(!el) return;
+    if(el.tagName === "INPUT" || el.tagName === "SELECT" || el.tagName === "BUTTON") {
+      el.disabled = !enabled;
+      if(!enabled) el.classList.add("opacity-50","pointer-events-none");
+      else el.classList.remove("opacity-50","pointer-events-none");
+    } else {
+      if(!enabled) el.classList.add("opacity-50","pointer-events-none");
+      else el.classList.remove("opacity-50","pointer-events-none");
+    }
+  });
+  const badge = document.getElementById("wsBadge");
+  if (badge) badge.textContent = workspaceId ? `workspace: ${workspaceId}` : `workspace: (not set)`;
+}
+
+// ---------- Save/Load with race protection ----------
 async function save(){
+  if(!workspaceId){
+    showWarn("Pick a workspace first (top right → Change Workspace).");
+    renderAll();
+    return;
+  }
   try{
-    if(!workspaceId) return;
     await workspaceDoc().set(state, { merge: true });
     renderAll();
   }catch(err){
-    showWarn("Save failed (will keep data in memory). Check internet/Firestore rules."); 
+    showWarn("Save failed (kept in memory). Check network/Firestore rules.");
     console.error(err);
+    renderAll(); // at least reflect in-memory
   }
 }
 
-async function load(){
+async function load(currentToken){
+  if(!workspaceId) return;
   try{
-    if(!workspaceId) return;
     const snap = await workspaceDoc().get();
+    if(currentToken !== wsLoadToken) return; // drop stale load
     if(snap.exists){
       const data = snap.data() || {};
-      state.employees   = Array.isArray(data.employees) ? data.employees : [];
-      state.transactions = Array.isArray(data.transactions) ? data.transactions : [];
+      state = {
+        employees: Array.isArray(data.employees) ? data.employees : [],
+        transactions: Array.isArray(data.transactions) ? data.transactions : []
+      };
     }else{
       await workspaceDoc().set(state);
     }
   }catch(err){
-    showWarn("Load failed. Using local in-memory state for now.");
+    showWarn("Load failed. Using local in-memory state.");
     console.error(err);
   }
 }
@@ -68,18 +102,18 @@ async function initAuth(){
   try {
     await auth.signInAnonymously();
   } catch (err) {
-    // Don’t block the app; you can still use local state and export/import
-    showWarn("Anonymous auth failed. Add your GitHub Pages host under Firebase → Authentication → Authorized domains.");
+    showWarn("Anonymous auth failed. Add your GitHub Pages host to Firebase → Auth → Authorized domains.");
     console.error(err);
   }
 }
 
-// ---------- Workspace modal ----------
+// ---------- Workspace helpers ----------
 function randomCode(){
   const words = ["mint","opal","nova","resy","tiger","lotus","pearl","alpha","delta","echo","zen","omega"];
   const w = words[Math.floor(Math.random()*words.length)];
   return `${w}-${Math.random().toString(36).slice(2,6)}`;
 }
+
 function openWorkspaceModal(){
   const modal = document.getElementById("wsModal");
   const inp   = document.getElementById("wsInput");
@@ -96,16 +130,34 @@ function closeWorkspaceModal(){
   modal.classList.add("hidden");
   modal.classList.remove("flex");
 }
+
+function getWorkspaceFromHash(){
+  const m = location.hash.match(/ws=([^&]+)/);
+  return m ? decodeURIComponent(m[1]) : null;
+}
+function setWorkspaceHash(code){
+  const params = new URLSearchParams(location.hash.slice(1));
+  params.set("ws", code);
+  location.hash = params.toString();
+}
+
 async function setWorkspace(id){
-  workspaceId = (id||"").trim();
-  if(!workspaceId){ return; }
-  try{
-    localStorage.setItem(WS_KEY, workspaceId);
-  }catch(_){} // Safari private mode can throw; ignore
-  const badge = document.getElementById("wsBadge");
-  if (badge) badge.textContent = `workspace: ${workspaceId}`;
-  await load();
-  renderAll();
+  const code = (id||"").trim();
+  if(!code){ showWarn("Workspace code is required."); return; }
+
+  try{ localStorage.setItem(WS_KEY, code); }catch(_){}
+  setWorkspaceHash(code);
+
+  workspaceId = code;
+  setControlsEnabled(false); // disable during load
+
+  const myToken = ++wsLoadToken;
+  readyPromise = (async ()=>{
+    await load(myToken);
+    if(myToken === wsLoadToken) setControlsEnabled(true);
+    renderAll();
+  })();
+  await readyPromise;
 }
 
 // =================== Utilities / CSV / JSON ===================
@@ -114,7 +166,6 @@ function el(tag, cls="", html=""){ const e=document.createElement(tag); if(cls) 
 function fmtMoney(n){ if(n==null || isNaN(n)) return "₹ 0"; return "₹ " + Number(n).toLocaleString(undefined,{maximumFractionDigits:2}); }
 function parseNumber(s){ if(!s) return NaN; return parseFloat(String(s).replace(/[^\d.]/g,"")); }
 const CSV_SEP = ",";
-
 function stripBOM(t){ return t && t.charCodeAt(0)===0xFEFF ? t.slice(1) : t; }
 function parseCsv(text){
   text = stripBOM(String(text||"")).replace(/\r\n/g,"\n").replace(/\r/g,"\n");
@@ -131,15 +182,10 @@ function parseCsv(text){
     i++;
   }
   if(cur.length || row.length){ push(); rows.push(row); }
-  if(rows.length===0) return [];
-  // Trim trailing empty lines
   while(rows.length && rows[rows.length-1].every(cell=>!String(cell||"").trim())) rows.pop();
-
   const header = rows[0].map(h=>String(h||"").trim().toLowerCase());
   return rows.slice(1).filter(r=>r.some(x=>String(x||"").trim().length)).map(r=>{
-    const obj={};
-    for(let k=0;k<header.length;k++){ obj[header[k]] = String(r[k]??"").trim(); }
-    return obj;
+    const obj={}; for(let k=0;k<header.length;k++){ obj[header[k]] = String(r[k]??"").trim(); } return obj;
   });
 }
 function toCsv(rows){
@@ -150,25 +196,29 @@ function toCsv(rows){
   return header + "\n" + body;
 }
 function downloadCsv(content, name){
-  const blob=new Blob([content],{type:"text/csv;charset=utf-8;"}); 
+  const blob=new Blob([content],{type:"text/csv;charset=utf-8;"});
   const url=URL.createObjectURL(blob);
   const a=document.createElement("a"); a.href=url; a.download=name; a.click(); URL.revokeObjectURL(url);
 }
 function exportJSON(){
+  if(controlsDisabled) return showWarn("Pick a workspace first.");
   const a=document.createElement("a");
   a.href="data:application/json;charset=utf-8,"+encodeURIComponent(JSON.stringify(state,null,2));
   a.download=`${workspaceId||"workspace"}.json`; a.click();
 }
-function importJSONFile(file){
+function importJSONFile(file, inputEl){
+  if(controlsDisabled) return showWarn("Pick a workspace first.");
   const reader = new FileReader();
   reader.onload = async (e)=>{
     try{
       const obj = JSON.parse(e.target.result);
-      if(obj && obj.employees && obj.transactions){ state=obj; await save(); }
-      else alert("Invalid JSON structure.");
+      if(obj && obj.employees && obj.transactions){ 
+        await readyPromise; 
+        state=obj; 
+        await save(); 
+      } else alert("Invalid JSON structure.");
     }catch(err){ alert("Failed to parse JSON."); }
-    // allow selecting same file again
-    try{ e.target.value=""; }catch(_){}
+    if(inputEl) try{ inputEl.value=""; }catch(_){}
   };
   reader.readAsText(file);
 }
@@ -181,16 +231,16 @@ function renderEmployees(){
   state.employees.forEach(emp=>{
     const tr = el("tr");
     tr.innerHTML = `
-      <td class="p-2"><input class="w-full border rounded px-2 py-1" value="${emp.name}" data-id="${emp.id}" data-f="name"></td>
+      <td class="p-2"><input class="w-full border rounded px-2 py-1" value="${emp.name}" data-id="${emp.id}" data-f="name" ${controlsDisabled?'disabled':''}></td>
       <td class="p-2">
-        <select class="border rounded px-2 py-1" data-id="${emp.id}" data-f="cutType">
+        <select class="border rounded px-2 py-1" data-id="${emp.id}" data-f="cutType" ${controlsDisabled?'disabled':''}>
           <option value="percent" ${emp.cutType==='percent'?'selected':''}>Percent (%)</option>
           <option value="flat" ${emp.cutType==='flat'?'selected':''}>Flat (₹)</option>
         </select>
       </td>
-      <td class="p-2"><input type="number" step="0.01" class="w-32 border rounded px-2 py-1" value="${emp.cutValue}" data-id="${emp.id}" data-f="cutValue"></td>
+      <td class="p-2"><input type="number" step="0.01" class="w-32 border rounded px-2 py-1" value="${emp.cutValue}" data-id="${emp.id}" data-f="cutValue" ${controlsDisabled?'disabled':''}></td>
       <td class="p-2">
-        <button class="px-2 py-1 rounded bg-red-50 text-red-700 border border-red-200 hover:bg-red-100" data-id="${emp.id}" data-action="del">Delete</button>
+        <button class="px-2 py-1 rounded bg-red-50 text-red-700 border border-red-200 hover:bg-red-100" data-id="${emp.id}" data-action="del" ${controlsDisabled?'disabled':''}>Delete</button>
       </td>
     `;
     tbody.appendChild(tr);
@@ -198,6 +248,7 @@ function renderEmployees(){
 
   tbody.querySelectorAll("input,select,button").forEach(ctrl=>{
     ctrl.addEventListener("change", async e=>{
+      if(controlsDisabled) return showWarn("Pick a workspace first.");
       const id = e.target.dataset.id;
       const f  = e.target.dataset.f;
       const i  = state.employees.findIndex(x=>x.id===id);
@@ -205,14 +256,15 @@ function renderEmployees(){
         if(f==="name") state.employees[i].name = e.target.value.trim();
         if(f==="cutType") state.employees[i].cutType = e.target.value;
         if(f==="cutValue") state.employees[i].cutValue = parseFloat(e.target.value || 0);
-        await save();
+        await readyPromise; await save();
       }
     });
     ctrl.addEventListener("click", async e=>{
+      if(controlsDisabled) return;
       if(e.target.dataset.action==="del"){
         const id = e.target.dataset.id;
         state.employees = state.employees.filter(x=>x.id!==id);
-        await save();
+        await readyPromise; await save();
       }
     });
   });
@@ -417,8 +469,8 @@ function renderTransactions(){
         <td class="p-2">${t.ref || "-"}</td>
         <td class="p-2">${t.note || ""}</td>
         <td class="p-2">
-          <button class="px-2 py-1 rounded border hover:bg-gray-100" data-id="${t.id}" data-act="edit">Edit</button>
-          <button class="px-2 py-1 rounded border text-red-700 hover:bg-red-50" data-id="${t.id}" data-act="del">Delete</button>
+          <button class="px-2 py-1 rounded border hover:bg-gray-100" data-id="${t.id}" data-act="edit" ${controlsDisabled?'disabled':''}>Edit</button>
+          <button class="px-2 py-1 rounded border text-red-700 hover:bg-red-50" data-id="${t.id}" data-act="del" ${controlsDisabled?'disabled':''}>Delete</button>
         </td>
       `;
       outT.appendChild(tr);
@@ -432,8 +484,8 @@ function renderTransactions(){
         <td class="p-2">${t.source || ""}</td>
         <td class="p-2">${t.note || ""}</td>
         <td class="p-2">
-          <button class="px-2 py-1 rounded border hover:bg-gray-100" data-id="${t.id}" data-act="edit">Edit</button>
-          <button class="px-2 py-1 rounded border text-red-700 hover:bg-red-50" data-id="${t.id}" data-act="del">Delete</button>
+          <button class="px-2 py-1 rounded border hover:bg-gray-100" data-id="${t.id}" data-act="edit" ${controlsDisabled?'disabled':''}>Edit</button>
+          <button class="px-2 py-1 rounded border text-red-700 hover:bg-red-50" data-id="${t.id}" data-act="del" ${controlsDisabled?'disabled':''}>Delete</button>
         </td>
       `;
       retT.appendChild(tr);
@@ -442,10 +494,11 @@ function renderTransactions(){
 
   [outT,retT].forEach(tb=> tb.querySelectorAll("button").forEach(btn=>{
     btn.addEventListener("click", async e=>{
+      if(controlsDisabled) return showWarn("Pick a workspace first.");
       const id = e.target.dataset.id, act = e.target.dataset.act;
       if(act==="del"){
         state.transactions = state.transactions.filter(t=>t.id!==id);
-        await save();
+        await readyPromise; await save();
       }else if(act==="edit"){
         const t = state.transactions.find(x=>x.id===id);
         openEditDialog(t);
@@ -523,7 +576,7 @@ function openEditDialog(t){
     t.source = card.querySelector("#edSource").value.trim();
     t.note = card.querySelector("#edNote").value.trim();
     overlay.remove();
-    await save();
+    await readyPromise; await save();
   });
 }
 
@@ -640,6 +693,7 @@ function makeParsedCard(parsed, imgUrl){
 
   card.querySelector("button").addEventListener("click", ()=> card.remove());
   card.querySelector('[data-act="save"]').addEventListener("click", async ()=>{
+    if(controlsDisabled) return showWarn("Pick a workspace first.");
     const rec = {
       id: uid(),
       type: typeSel.value,
@@ -658,7 +712,7 @@ function makeParsedCard(parsed, imgUrl){
     if(rec.type==="outgoing" && !rec.employeeId){ alert("Please choose an employee for outgoing"); return; }
     state.transactions.push(rec);
     card.remove();
-    await save();
+    await readyPromise; await save();
   });
 
   return card;
@@ -668,22 +722,18 @@ function makeParsedCard(parsed, imgUrl){
 function renderAll(){ renderEmployees(); renderSummary(); renderTransactions(); }
 
 async function init(){
-  // Never let auth error block UI binding
-  try { await initAuth(); } catch(e){ showWarn("Auth init error; continuing offline mode."); }
+  setControlsEnabled(false);       // locked until workspace chosen
+  try { await initAuth(); } catch(e){ showWarn("Auth init error; continuing offline."); }
 
-  // Workspace controls
-  try{
-    const wsStored = (()=>{ try{return localStorage.getItem(WS_KEY);}catch(_){return null;} })();
-    if(wsStored){ await setWorkspace(wsStored); }
-    else { openWorkspaceModal(); }
-  }catch(e){
-    showWarn("Could not access workspace storage; continuing without preset code.");
-    console.error(e);
-  }
+  // Workspace selection priority: URL hash (#ws=CODE) → localStorage → modal
+  const fromHash = getWorkspaceFromHash();
+  const fromLS   = (()=>{ try{return localStorage.getItem(WS_KEY);}catch(_){return null;} })();
+  if(fromHash){ await setWorkspace(fromHash); }
+  else if(fromLS){ await setWorkspace(fromLS); }
+  else { openWorkspaceModal(); }
 
-  // Workspace modal buttons
-  const switchBtn = document.getElementById("switchWorkspaceBtn");
-  switchBtn?.addEventListener("click", openWorkspaceModal);
+  // Workspace modal controls
+  document.getElementById("switchWorkspaceBtn")?.addEventListener("click", openWorkspaceModal);
   document.getElementById("wsGenerate")?.addEventListener("click", ()=>{
     const i = document.getElementById("wsInput"); if(i) i.value = randomCode();
   });
@@ -702,93 +752,93 @@ async function init(){
   const parsedList = document.getElementById("parsedList");
   const progress   = document.getElementById("progress");
 
-  dropZone?.addEventListener("click", ()=> fileInput?.click());
-  fileInput?.addEventListener("change", ()=> { renderSelectedFiles(); /* reset to allow re-pick same file later */ });
+  dropZone?.addEventListener("click", ()=> { if(!controlsDisabled) fileInput?.click(); else showWarn("Pick a workspace first."); });
+  fileInput?.addEventListener("change", ()=> { if(!controlsDisabled) renderSelectedFiles(); else fileInput.value=""; });
 
-  dropZone?.addEventListener("dragover", e=>{ e.preventDefault(); dropZone.classList.add("bg-gray-50"); });
+  dropZone?.addEventListener("dragover", e=>{ e.preventDefault(); if(!controlsDisabled) dropZone.classList.add("bg-gray-50"); });
   dropZone?.addEventListener("dragleave", ()=> dropZone.classList.remove("bg-gray-50"));
   dropZone?.addEventListener("drop", e=>{
     e.preventDefault();
+    if(controlsDisabled) return showWarn("Pick a workspace first.");
     if(fileInput){ fileInput.files = e.dataTransfer.files; }
     dropZone.classList.remove("bg-gray-50"); renderSelectedFiles();
   });
   renderSelectedFiles();
 
+  // Employees add
   document.getElementById("addEmployeeBtn")?.addEventListener("click", async ()=>{
+    if(controlsDisabled) return showWarn("Pick a workspace first.");
     state.employees.push({id:uid(), name:"New Employee", cutType:"percent", cutValue:0});
-    await save();
+    await readyPromise; await save();
   });
 
   // Exports / Imports
   document.getElementById("exportJsonBtn")?.addEventListener("click", exportJSON);
 
+  // CSV EXPORTS
   document.getElementById("exportEmpBtn")?.addEventListener("click", ()=>{
+    if(controlsDisabled) return showWarn("Pick a workspace first.");
     const per = computeSummary();
     const rows = Object.values(per).map(e=>({
       employee: e.name, cut_type: e.cutType, cut_value: e.cutValue,
       total_sent: e.totalSent, total_cut: e.totalCut, total_expected: e.totalExpected
     }));
-    const csv = rows.length ? toCsv(rows) : "";
-    if(!csv) return alert("Nothing to export");
+    const csv = rows.length ? toCsv(rows) : ""; if(!csv) return alert("Nothing to export");
     downloadCsv(csv, `employees-${workspaceId||"ws"}.csv`);
   });
-
   document.getElementById("exportOutBtn")?.addEventListener("click", ()=>{
+    if(controlsDisabled) return showWarn("Pick a workspace first.");
     const per = computeSummary(); const rows=[];
     Object.values(per).forEach(e=> e.outgoings.forEach(o=> rows.push({
       date:o.date||"", time:o.time||"", employee:e.name, amount:o.amount,
       cut:o.computedCut, expected_return:o.expectedReturn, mode:o.mode||"",
       ref:o.ref||"", note:o.note||""
     })));
-    const csv = rows.length ? toCsv(rows) : "";
-    if(!csv) return alert("Nothing to export");
+    const csv = rows.length ? toCsv(rows) : ""; if(!csv) return alert("Nothing to export");
     downloadCsv(csv, `outgoing-${workspaceId||"ws"}.csv`);
   });
-
   document.getElementById("exportRetBtn")?.addEventListener("click", ()=>{
+    if(controlsDisabled) return showWarn("Pick a workspace first.");
     const rows = state.transactions.filter(t=>t.type==="return").map(r=>({
       date:r.date||"", time:r.time||"", amount:r.amount, mode:r.mode||"",
       ref:r.ref||"", source:r.source||"", note:r.note||""
     }));
-    const csv = rows.length ? toCsv(rows) : "";
-    if(!csv) return alert("Nothing to export");
+    const csv = rows.length ? toCsv(rows) : ""; if(!csv) return alert("Nothing to export");
     downloadCsv(csv, `incoming-${workspaceId||"ws"}.csv`);
   });
 
-  // IMPORT EMPLOYEES
+  // CSV IMPORTS — each awaits readyPromise and resets <input> so same file can be reselected
   const importEmpBtn  = document.getElementById("importEmpBtn");
   const importEmpFile = document.getElementById("importEmpFile");
-  importEmpBtn?.addEventListener("click", ()=> importEmpFile?.click());
+  importEmpBtn?.addEventListener("click", ()=> controlsDisabled ? showWarn("Pick a workspace first.") : importEmpFile?.click());
   importEmpFile?.addEventListener("change", e=>{
-    const f=e.target.files && e.target.files[0];
-    if(!f) return;
+    const f=e.target.files && e.target.files[0]; if(!f) return;
     const reader=new FileReader();
     reader.onload=async ev=>{
+      if(controlsDisabled) return showWarn("Pick a workspace first.");
+      await readyPromise;
       parseCsv(ev.target.result).forEach(r=>{
-        const name = r.employee || r.name;
-        if(!name) return;
+        const name = r.employee || r.name; if(!name) return;
         const existing = state.employees.find(e=>e.name.toLowerCase()===name.toLowerCase());
         const emp = existing || { id: uid(), name, cutType:"percent", cutValue:0 };
         emp.cutType  = (r.cut_type || emp.cutType || "percent").toLowerCase()==="flat" ? "flat":"percent";
         emp.cutValue = parseFloat(r.cut_value || emp.cutValue || 0);
         if(!existing) state.employees.push(emp);
       });
-      await save();
-      // allow re-selecting same file
-      try{ e.target.value=""; }catch(_){}
+      await save(); try{ e.target.value=""; }catch(_){}
     };
     reader.readAsText(f);
   });
 
-  // IMPORT OUTGOING
   const importOutBtn  = document.getElementById("importOutBtn");
   const importOutFile = document.getElementById("importOutFile");
-  importOutBtn?.addEventListener("click", ()=> importOutFile?.click());
+  importOutBtn?.addEventListener("click", ()=> controlsDisabled ? showWarn("Pick a workspace first.") : importOutFile?.click());
   importOutFile?.addEventListener("change", e=>{
-    const f=e.target.files && e.target.files[0];
-    if(!f) return;
+    const f=e.target.files && e.target.files[0]; if(!f) return;
     const reader=new FileReader();
     reader.onload=async ev=>{
+      if(controlsDisabled) return showWarn("Pick a workspace first.");
+      await readyPromise;
       parseCsv(ev.target.result).forEach(r=>{
         const amount = parseFloat(r.amount||0); if(!amount) return;
         const name = r.employee || r.name || ""; let empId="";
@@ -802,21 +852,20 @@ async function init(){
           cutOverride: r.cut?parseFloat(r.cut):null, createdAt:Date.now()
         });
       });
-      await save();
-      try{ e.target.value=""; }catch(_){}
+      await save(); try{ e.target.value=""; }catch(_){}
     };
     reader.readAsText(f);
   });
 
-  // IMPORT RETURNS
   const importRetBtn  = document.getElementById("importRetBtn");
   const importRetFile = document.getElementById("importRetFile");
-  importRetBtn?.addEventListener("click", ()=> importRetFile?.click());
+  importRetBtn?.addEventListener("click", ()=> controlsDisabled ? showWarn("Pick a workspace first.") : importRetFile?.click());
   importRetFile?.addEventListener("change", e=>{
-    const f=e.target.files && e.target.files[0];
-    if(!f) return;
+    const f=e.target.files && e.target.files[0]; if(!f) return;
     const reader=new FileReader();
     reader.onload=async ev=>{
+      if(controlsDisabled) return showWarn("Pick a workspace first.");
+      await readyPromise;
       parseCsv(ev.target.result).forEach(r=>{
         const amount=parseFloat(r.amount||0); if(!amount) return;
         state.transactions.push({
@@ -825,46 +874,50 @@ async function init(){
           source:r.source||"", note:r.note||"", createdAt:Date.now()
         });
       });
-      await save();
-      try{ e.target.value=""; }catch(_){}
+      await save(); try{ e.target.value=""; }catch(_){}
     };
     reader.readAsText(f);
   });
 
   // Clear groups
   document.getElementById("clearOutgoingBtn")?.addEventListener("click", async ()=>{
+    if(controlsDisabled) return showWarn("Pick a workspace first.");
     if(confirm("Delete ALL outgoing transactions in this workspace?")) {
-      state.transactions = state.transactions.filter(t=>t.type!=="outgoing");
-      await save();
+      await readyPromise; state.transactions = state.transactions.filter(t=>t.type!=="outgoing"); await save();
     }
   });
   document.getElementById("clearIncomingBtn")?.addEventListener("click", async ()=>{
+    if(controlsDisabled) return showWarn("Pick a workspace first.");
     if(confirm("Delete ALL incoming (return) transactions in this workspace?")) {
-      state.transactions = state.transactions.filter(t=>t.type!=="return");
-      await save();
+      await readyPromise; state.transactions = state.transactions.filter(t=>t.type!=="return"); await save();
     }
   });
   document.getElementById("clearAllBtn")?.addEventListener("click", async ()=>{
+    if(controlsDisabled) return showWarn("Pick a workspace first.");
     if(confirm("Delete ALL employees & transactions in this workspace?")) {
-      state = {employees:[], transactions:[]};
-      await save();
+      await readyPromise; state = {employees:[], transactions:[]}; await save();
     }
   });
 
   // Import JSON
-  document.getElementById("importJsonBtn")?.addEventListener("click", ()=> document.getElementById("importJsonFile")?.click());
+  document.getElementById("importJsonBtn")?.addEventListener("click", ()=> {
+    if(controlsDisabled) return showWarn("Pick a workspace first.");
+    document.getElementById("importJsonFile")?.click();
+  });
   document.getElementById("importJsonFile")?.addEventListener("change", e=>{
     const f=e.target.files && e.target.files[0];
-    if(f) importJSONFile(f);
+    if(f) importJSONFile(f, e.target);
   });
 
   // OCR flow
   processBtn?.addEventListener("click", async ()=>{
+    if(controlsDisabled) return showWarn("Pick a workspace first.");
     const input = document.getElementById("fileInput");
     const files = input?.files;
     const parsedList = document.getElementById("parsedList");
     const progress   = document.getElementById("progress");
     if(!files || !files.length){ alert("Please choose screenshots"); return; }
+    await readyPromise;
     progress.textContent = "Running OCR...";
     parsedList.innerHTML = "";
     let done = 0;
@@ -882,12 +935,11 @@ async function init(){
       }
     }
     progress.textContent += " — review & Save.";
-    // reset file input so same files can be imported again later
     try{ input.value=""; }catch(_){}
     renderSelectedFiles();
   });
 
-  // initial render (even before workspace loads, to attach handlers)
+  // initial passive render
   renderAll();
 }
 
