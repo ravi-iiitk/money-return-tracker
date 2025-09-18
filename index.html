@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>💸 Screenshot Money Tracker</title>
+
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            primary: { DEFAULT: "#2563eb" },   /* blue-600 */
+            accent:  { DEFAULT: "#22c55e" },   /* green-500 */
+            amberish:{ DEFAULT: "#f59e0b" }    /* amber-500 */
+          }
+        }
+      }
+    }
+  </script>
+  <!-- Tesseract.js for OCR (runs in browser) -->
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+</head>
+
+<body class="bg-gradient-to-br from-indigo-50 via-sky-50 to-emerald-50 min-h-screen text-gray-900">
+  <!-- Top bar -->
+  <header class="bg-gradient-to-r from-primary to-indigo-600 text-white shadow">
+    <div class="max-w-6xl mx-auto px-4 py-3 flex flex-wrap gap-2 items-center justify-between">
+      <h1 class="text-lg sm:text-xl font-semibold flex items-center gap-2">
+        <span class="inline-flex w-8 h-8 items-center justify-center rounded-full bg-white/20">💸</span>
+        Screenshot Money Tracker
+      </h1>
+      <div class="flex flex-wrap gap-2">
+        <button id="exportJsonBtn" class="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20">Export JSON</button>
+        <button id="importJsonBtn" class="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20">Import JSON</button>
+        <input id="importJsonFile" type="file" accept="application/json" class="hidden" />
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-6xl mx-auto px-3 sm:px-4 py-6 space-y-8">
+    <!-- Employees -->
+    <section class="bg-white/90 backdrop-blur rounded-2xl border shadow-sm">
+      <div class="p-5 border-b bg-gradient-to-r from-white to-indigo-50 rounded-t-2xl">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <h2 class="text-lg font-semibold">Employees & Cut Rules</h2>
+          <div class="flex flex-wrap gap-2">
+            <button id="addEmployeeBtn" class="px-3 py-1.5 rounded-lg bg-primary text-white hover:bg-blue-700">Add Employee</button>
+            <button id="importEmpBtn" class="px-3 py-1.5 rounded-lg border hover:bg-gray-50">Import Employees (CSV)</button>
+            <input id="importEmpFile" type="file" accept=".csv,text/csv" class="hidden" />
+          </div>
+        </div>
+      </div>
+      <div class="p-5 overflow-x-auto">
+        <table class="min-w-full text-sm">
+          <thead class="bg-gray-100">
+            <tr>
+              <th class="text-left p-2">Name</th>
+              <th class="text-left p-2">Cut Type</th>
+              <th class="text-left p-2">Cut Value</th>
+              <th class="text-left p-2">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="employeeTbody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Upload -->
+    <section class="bg-white/90 backdrop-blur rounded-2xl border shadow-sm">
+      <div class="p-5 border-b bg-gradient-to-r from-white to-emerald-50 rounded-t-2xl">
+        <h2 class="text-lg font-semibold mb-1">Upload Transaction Screenshots</h2>
+        <p class="text-sm text-gray-600">Drop images → OCR fills the form → you review and save.</p>
+      </div>
+
+      <div class="p-5 flex flex-col md:flex-row gap-4">
+        <div id="dropZone"
+             class="flex-1 border-2 border-dashed rounded-xl p-6 text-center cursor-pointer hover:bg-gray-50 bg-white">
+          <input id="fileInput" type="file" accept="image/*" multiple class="hidden" />
+          <p class="font-medium">Tap / Click here or drag screenshots</p>
+          <p class="text-xs text-gray-500">JPG, PNG, etc.</p>
+        </div>
+
+        <div class="w-full md:w-80 space-y-2">
+          <label class="block text-sm">Detected Direction</label>
+          <select id="directionSelect" class="w-full border rounded-lg px-3 py-2">
+            <option value="auto">Auto (from OCR)</option>
+            <option value="outgoing">Outgoing (you → employee)</option>
+            <option value="return">Return (CA/bank → you)</option>
+          </select>
+          <label class="block text-sm">Employee (optional)</label>
+          <select id="employeeSelect" class="w-full border rounded-lg px-3 py-2"></select>
+          <button id="processBtn" class="w-full mt-2 bg-accent text-white rounded-lg px-3 py-2 hover:bg-green-600">Run OCR</button>
+          <div id="progress" class="text-xs text-gray-600"></div>
+        </div>
+      </div>
+
+      <div id="selectedFiles" class="px-5 pb-2"></div>
+      <div id="parsedList" class="px-5 pb-6 grid sm:grid-cols-2 gap-4"></div>
+    </section>
+
+    <!-- Summary + Export/Import -->
+    <section class="bg-white/90 backdrop-blur rounded-2xl border shadow-sm">
+      <div class="p-5 border-b bg-gradient-to-r from-white to-amber-50 rounded-t-2xl flex flex-wrap items-center justify-between gap-2">
+        <h2 class="text-lg font-semibold">Per-Employee Summary</h2>
+        <div class="flex flex-wrap gap-2">
+          <button id="exportEmpBtn" class="px-3 py-1.5 rounded-lg border hover:bg-gray-50">Export Employees</button>
+          <button id="exportOutBtn" class="px-3 py-1.5 rounded-lg border hover:bg-gray-50">Export Outgoing</button>
+          <button id="exportRetBtn" class="px-3 py-1.5 rounded-lg border hover:bg-gray-50">Export Incoming</button>
+
+          <button id="importOutBtn" class="px-3 py-1.5 rounded-lg border hover:bg-gray-50">Import Outgoing (CSV)</button>
+          <input id="importOutFile" type="file" accept=".csv,text/csv" class="hidden" />
+          <button id="importRetBtn" class="px-3 py-1.5 rounded-lg border hover:bg-gray-50">Import Incoming (CSV)</button>
+          <input id="importRetFile" type="file" accept=".csv,text/csv" class="hidden" />
+
+          <button id="clearAllBtn" class="px-3 py-1.5 rounded-lg border text-red-600 hover:bg-red-50">Clear All Data</button>
+        </div>
+      </div>
+
+      <div id="overallTotals" class="p-5 grid grid-cols-2 sm:grid-cols-4 gap-2"></div>
+      <div id="summaryCards" class="px-5 pb-6 grid sm:grid-cols-2 lg:grid-cols-3 gap-3"></div>
+    </section>
+
+    <!-- Tables -->
+    <section class="bg-white/90 backdrop-blur rounded-2xl border shadow-sm">
+      <div class="p-5">
+        <h3 class="font-semibold mb-2">Outgoing Transactions</h3>
+        <div class="overflow-x-auto">
+          <table class="min-w-full text-sm">
+            <thead class="bg-gray-100">
+              <tr>
+                <th class="text-left p-2">Date</th>
+                <th class="text-left p-2">Employee</th>
+                <th class="text-left p-2">Amount</th>
+                <th class="text-left p-2">Cut</th>
+                <th class="text-left p-2">Expected Return</th>
+                <th class="text-left p-2">Mode</th>
+                <th class="text-left p-2">Ref</th>
+                <th class="text-left p-2">Note</th>
+                <th class="text-left p-2">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="outgoingTbody"></tbody>
+          </table>
+        </div>
+
+        <h3 class="font-semibold mt-6 mb-2">Incoming (CA/Bank Returns)</h3>
+        <div class="overflow-x-auto">
+          <table class="min-w-full text-sm">
+            <thead class="bg-gray-100">
+              <tr>
+                <th class="text-left p-2">Date</th>
+                <th class="text-left p-2">Amount</th>
+                <th class="text-left p-2">Mode</th>
+                <th class="text-left p-2">Ref</th>
+                <th class="text-left p-2">Source</th>
+                <th class="text-left p-2">Note</th>
+                <th class="text-left p-2">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="returnTbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <footer class="text-center text-xs text-gray-600 pb-8">
+      Data is stored in your browser (localStorage). Use **Export JSON** to back up or move devices.
+    </footer>
+  </main>
+
+  <script src="./app.js"></script>
+</body>
+</html>
