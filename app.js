@@ -1,116 +1,90 @@
-// ======= Firestore + Google Sign-In (anonymous fallback) =======
+// =================== Workspace-based persistence ===================
 let state = { employees: [], transactions: [] };
-let auth = null, db = null, currentUser = null;
+let auth = null, db = null;
+let workspaceId = null;      // e.g. "resy-2025"
+const WS_KEY = "moneytracker_workspace";
 
-function stateDoc(){
-  if(!db || !currentUser) throw new Error("Firestore not ready");
-  return db.collection("states").doc(currentUser.uid);
+// ---------- Firestore doc for this workspace ----------
+function workspaceDoc(){
+  if(!db || !workspaceId) throw new Error("Firestore not ready or workspace missing");
+  return db.collection("workspaces").doc(workspaceId);
 }
 
 async function save(){
-  try {
-    await stateDoc().set(state, { merge: true });
-  } catch (e) {
-    console.error("Save failed:", e);
-    alert("Could not save to cloud. Check your internet.");
+  if(!workspaceId) return;
+  await workspaceDoc().set(state, { merge: true });
+  renderAll();
+}
+async function load(){
+  if(!workspaceId) return;
+  const snap = await workspaceDoc().get();
+  if(snap.exists){
+    const data = snap.data() || {};
+    state.employees   = Array.isArray(data.employees) ? data.employees : [];
+    state.transactions = Array.isArray(data.transactions) ? data.transactions : [];
+  }else{
+    await workspaceDoc().set(state);
   }
+}
+
+// ---------- Auth (anonymous only, resilient) ----------
+async function initAuth(){
+  auth = firebase.auth();
+  db   = firebase.firestore();
+  try { await auth.signInAnonymously(); }
+  catch (err) {
+    console.error("Anonymous auth failed:", err);
+    alert("Auth blocked by domain. Add your GitHub Pages host under Firebase → Authentication → Authorized domains.");
+  }
+}
+
+// ---------- Workspace modal ----------
+function randomCode(){
+  const words = ["mint","opal","nova","resy","tiger","lotus","pearl","alpha","delta","echo","zen","omega"];
+  const w = words[Math.floor(Math.random()*words.length)];
+  return `${w}-${Math.random().toString(36).slice(2,6)}`;
+}
+function openWorkspaceModal(){
+  const modal = document.getElementById("wsModal");
+  const inp   = document.getElementById("wsInput");
+  const errEl = document.getElementById("wsError");
+  inp.value = workspaceId || "";
+  errEl.classList.add("hidden");
+  modal.classList.remove("hidden");
+  modal.classList.add("flex");
+}
+function closeWorkspaceModal(){
+  const modal = document.getElementById("wsModal");
+  modal.classList.add("hidden");
+  modal.classList.remove("flex");
+}
+async function setWorkspace(id){
+  workspaceId = id.trim();
+  if(!workspaceId){ return; }
+  localStorage.setItem(WS_KEY, workspaceId);
+  document.getElementById("wsBadge").textContent = `workspace: ${workspaceId}`;
+  await load();
   renderAll();
 }
 
-async function load(){
-  try {
-    const snap = await stateDoc().get();
-    if (snap.exists) {
-      const data = snap.data();
-      state.employees   = Array.isArray(data.employees) ? data.employees : [];
-      state.transactions = Array.isArray(data.transactions) ? data.transactions : [];
-    } else {
-      await stateDoc().set(state);
-    }
-  } catch (e) {
-    console.error("Load failed:", e);
-    alert("Could not load from cloud.");
-  }
-}
-
-async function initPersistence(){
-  auth = firebase.auth();
-  db   = firebase.firestore();
-
-  // Start anonymous so app works immediately
-  await auth.signInAnonymously();
-
-  const signInBtn  = document.getElementById("googleSignIn");
-  const signOutBtn = document.getElementById("signOut");
-
-  signInBtn?.addEventListener("click", async ()=>{
-    try{
-      const provider = new firebase.auth.GoogleAuthProvider();
-      if (auth.currentUser && auth.currentUser.isAnonymous) {
-        await auth.currentUser.linkWithPopup(provider);  // keep same UID/data
-      } else {
-        await auth.signInWithPopup(provider);
-      }
-    }catch(err){
-      console.error("Google sign-in failed:", err);
-      alert("Google sign-in failed. See console.");
-    }
-  });
-
-  signOutBtn?.addEventListener("click", async ()=>{
-    await auth.signOut();
-    await auth.signInAnonymously(); // keep app usable
-  });
-
-  auth.onAuthStateChanged(async (u)=>{
-    currentUser = u || null;
-    // Header tweaks
-    const uidBadge = document.getElementById("uidBadge");
-    if (uidBadge) uidBadge.textContent = currentUser ? `uid: ${currentUser.uid}` : "";
-
-    if (currentUser && !currentUser.isAnonymous) {
-      signInBtn?.classList.add("hidden");
-      signOutBtn?.classList.remove("hidden");
-    } else {
-      signOutBtn?.classList.add("hidden");
-      signInBtn?.classList.remove("hidden");
-    }
-
-    if (currentUser) {
-      await load();
-      renderAll();
-    }
-  });
-}
-
-// ======= Utilities / CSV / JSON =======
+// =================== Utilities / CSV / JSON ===================
 function uid(){ return Math.random().toString(36).slice(2); }
 function el(tag, cls="", html=""){ const e=document.createElement(tag); if(cls) e.className=cls; if(html) e.innerHTML=html; return e; }
 function fmtMoney(n){ if(n==null || isNaN(n)) return "₹ 0"; return "₹ " + Number(n).toLocaleString(undefined,{maximumFractionDigits:2}); }
 function parseNumber(s){ if(!s) return NaN; return parseFloat(String(s).replace(/[^\d.]/g,"")); }
 const CSV_SEP = ",";
-
 function parseCsv(text){
-  const rows = [];
-  let i=0, cur="", q=false; const push=()=>{ row.push(cur); cur=""; };
-  let row=[];
-  while(i<text.length){
-    const c=text[i];
+  const rows = []; let i=0, cur="", q=false; const push=()=>{ row.push(cur); cur=""; }; let row=[];
+  while(i<text.length){ const c=text[i];
     if(c==='\"'){ if(q && text[i+1]==='\"'){ cur+='\"'; i++; } else q=!q; }
     else if(c===',' && !q){ push(); }
-    else if((c==='\n' || c==='\r') && !q){
-      if(c==='\r' && text[i+1]==='\n') i++;
-      push(); rows.push(row); row=[];
-    } else { cur+=c; }
-    i++;
-  }
+    else if((c==='\n' || c==='\r') && !q){ if(c==='\r' && text[i+1]==='\n') i++; push(); rows.push(row); row=[]; }
+    else { cur+=c; } i++; }
   if(cur.length || row.length){ push(); rows.push(row); }
   if(rows.length===0) return [];
   const header = rows[0].map(h=>h.trim().toLowerCase());
   return rows.slice(1).filter(r=>r.length).map(r=>{
-    const obj={};
-    for(let k=0;k<header.length;k++){ obj[header[k]] = (r[k]??"").trim(); }
-    return obj;
+    const obj={}; for(let k=0;k<header.length;k++){ obj[header[k]] = (r[k]??"").trim(); } return obj;
   });
 }
 function toCsv(rows){
@@ -128,7 +102,7 @@ function downloadCsv(content, name){
 function exportJSON(){
   const a=document.createElement("a");
   a.href="data:application/json;charset=utf-8,"+encodeURIComponent(JSON.stringify(state,null,2));
-  a.download="screenshot-money-tracker.json"; a.click();
+  a.download=`${workspaceId||"workspace"}.json`; a.click();
 }
 function importJSONFile(file){
   const reader = new FileReader();
@@ -142,7 +116,7 @@ function importJSONFile(file){
   reader.readAsText(file);
 }
 
-// ======= Employees UI =======
+// =================== Employees UI ===================
 function renderEmployees(){
   const tbody = document.getElementById("employeeTbody");
   tbody.innerHTML = "";
@@ -189,7 +163,7 @@ function renderEmployees(){
   sel.innerHTML = `<option value="">(Auto / Choose)</option>` + state.employees.map(e=> `<option value="${e.id}">${e.name}</option>`).join("");
 }
 
-// ======= OCR helpers =======
+// =================== OCR helpers ===================
 function detectDirection(text){
   const t = text.toLowerCase();
   const isReturn   = /(credited|received|payment received|incoming)/.test(t);
@@ -302,7 +276,7 @@ function parseTransactionText(text){
   return {amount,date,time,ref,mode,counterparty,direction,employeeId};
 }
 
-// ======= Summary logic (employees never return) =======
+// =================== Summary (employees never return) ===================
 function computeSummary(){
   const per = {};
   state.employees.forEach(e => per[e.id] = {
@@ -328,7 +302,7 @@ function computeOverallTotals(){
   return { totalSent, totalExpected, totalReturned, overallBalance };
 }
 
-// ======= Rendering =======
+// =================== Rendering ===================
 function renderSummary(){
   const overall = document.getElementById("overallTotals");
   const ot = computeOverallTotals();
@@ -420,7 +394,7 @@ function renderTransactions(){
 
 function renderAll(){ renderEmployees(); renderSummary(); renderTransactions(); }
 
-// ======= Edit dialog =======
+// =================== Edit dialog ===================
 function openEditDialog(t){
   const overlay = el("div","fixed inset-0 bg-black/30 grid place-items-center p-4");
   const card = el("div","bg-white rounded-2xl p-5 max-w-lg w-full space-y-3");
@@ -491,7 +465,7 @@ function openEditDialog(t){
   });
 }
 
-// ======= File selection / preview =======
+// =================== File selection / OCR pipeline ===================
 function renderSelectedFiles(){
   const wrap = document.getElementById("selectedFiles");
   const input = document.getElementById("fileInput");
@@ -536,135 +510,8 @@ function removeSelectedFile(idx){
     renderSelectedFiles();
   }catch(e){ alert("Browser doesn't allow removing individual files. Use Clear selection."); }
 }
-function clearSelectedFiles(){
-  const input = document.getElementById("fileInput"); input.value = ""; renderSelectedFiles();
-}
+function clearSelectedFiles(){ const input = document.getElementById("fileInput"); input.value = ""; renderSelectedFiles(); }
 
-// ======= CSV EXPORTS =======
-function exportEmployeesCSV(){
-  const per = computeSummary();
-  const rows = Object.values(per).map(e=>({
-    employee: e.name,
-    cut_type: e.cutType,
-    cut_value: e.cutValue,
-    total_sent: e.totalSent,
-    total_cut: e.totalCut,
-    total_expected: e.totalExpected
-  }));
-  const csv = toCsv(rows || []); if(!csv) return alert("Nothing to export");
-  downloadCsv(csv, "employees.csv");
-}
-function exportOutgoingCSV(){
-  const per = computeSummary();
-  const rows = [];
-  Object.values(per).forEach(e=>{
-    e.outgoings.forEach(o=>{
-      rows.push({
-        date:o.date||"",
-        time:o.time||"",
-        employee:e.name,
-        amount:o.amount,
-        cut:o.computedCut,
-        expected_return:o.expectedReturn,
-        mode:o.mode||"",
-        ref:o.ref||"",
-        note:o.note||""
-      });
-    });
-  });
-  const csv = toCsv(rows || []); if(!csv) return alert("Nothing to export");
-  downloadCsv(csv, "outgoing.csv");
-}
-function exportReturnsCSV(){
-  const rows = state.transactions.filter(t=>t.type==="return").map(r=>({
-    date:r.date||"",
-    time:r.time||"",
-    amount:r.amount,
-    mode:r.mode||"",
-    ref:r.ref||"",
-    source:r.source||"",
-    note:r.note||""
-  }));
-  const csv = toCsv(rows || []); if(!csv) return alert("Nothing to export");
-  downloadCsv(csv, "incoming.csv");
-}
-
-// ======= CSV IMPORTS =======
-function importEmployeesCSV(file){
-  const reader = new FileReader();
-  reader.onload = async (e)=>{
-    const rows = parseCsv(e.target.result);
-    rows.forEach(r=>{
-      const name = r.employee || r.name;
-      if(!name) return;
-      const existing = state.employees.find(e=>e.name.toLowerCase()===name.toLowerCase());
-      const emp = existing || { id: uid(), name, cutType:"percent", cutValue:0 };
-      emp.cutType  = (r.cut_type || emp.cutType || "percent").toLowerCase()==="flat" ? "flat":"percent";
-      emp.cutValue = parseFloat(r.cut_value || emp.cutValue || 0);
-      if(!existing) state.employees.push(emp);
-    });
-    await save();
-  };
-  reader.readAsText(file);
-}
-function ensureEmployeeByName(name){
-  if(!name) return "";
-  const found = state.employees.find(e=> e.name.toLowerCase()===name.toLowerCase());
-  if(found) return found.id;
-  const emp = { id: uid(), name, cutType:"percent", cutValue:0 };
-  state.employees.push(emp);
-  return emp.id;
-}
-function importOutgoingCSV(file){
-  const reader = new FileReader();
-  reader.onload = async (e)=>{
-    const rows = parseCsv(e.target.result);
-    rows.forEach(r=>{
-      const employee = r.employee || r.name || "";
-      const employeeId = ensureEmployeeByName(employee);
-      const amount = parseFloat(r.amount || 0);
-      if(!employeeId || !amount) return;
-      state.transactions.push({
-        id: uid(), type:"outgoing", employeeId,
-        amount,
-        mode: r.mode || "",
-        date: r.date || "",
-        time: r.time || "",
-        ref : r.ref  || "",
-        note: r.note || "",
-        cutOverride: r.cut ? parseFloat(r.cut) : null,
-        createdAt: Date.now()
-      });
-    });
-    await save();
-  };
-  reader.readAsText(file);
-}
-function importIncomingCSV(file){
-  const reader = new FileReader();
-  reader.onload = async (e)=>{
-    const rows = parseCsv(e.target.result);
-    rows.forEach(r=>{
-      const amount = parseFloat(r.amount || 0);
-      if(!amount) return;
-      state.transactions.push({
-        id: uid(), type:"return",
-        amount,
-        mode: r.mode || "",
-        date: r.date || "",
-        time: r.time || "",
-        ref : r.ref  || "",
-        source: r.source || "",
-        note: r.note || "",
-        createdAt: Date.now()
-      });
-    });
-    await save();
-  };
-  reader.readAsText(file);
-}
-
-// ======= OCR pipeline =======
 async function ocrImage(file){
   const worker = await Tesseract.createWorker();
   const { data:{ text } } = await worker.recognize(file);
@@ -754,19 +601,35 @@ function makeParsedCard(parsed, imgUrl){
   return card;
 }
 
-// ======= Init / buttons =======
+// =================== Init / Buttons ===================
 function renderAll(){ renderEmployees(); renderSummary(); renderTransactions(); }
 
 async function init(){
-  await initPersistence();     // Firestore auth + load
+  await initAuth();
 
+  // Workspace controls
+  const wsStored = localStorage.getItem(WS_KEY);
+  if(wsStored){ await setWorkspace(wsStored); }
+  else { openWorkspaceModal(); }
+
+  document.getElementById("switchWorkspaceBtn").addEventListener("click", openWorkspaceModal);
+  document.getElementById("wsGenerate").addEventListener("click", ()=>{
+    document.getElementById("wsInput").value = randomCode();
+  });
+  document.getElementById("wsCancel").addEventListener("click", closeWorkspaceModal);
+  document.getElementById("wsConfirm").addEventListener("click", async ()=>{
+    const code = document.getElementById("wsInput").value.trim();
+    if(!code){ document.getElementById("wsError").classList.remove("hidden"); return; }
+    closeWorkspaceModal(); await setWorkspace(code);
+  });
+
+  // File select & preview
   const dropZone   = document.getElementById("dropZone");
   const fileInput  = document.getElementById("fileInput");
   const processBtn = document.getElementById("processBtn");
   const parsedList = document.getElementById("parsedList");
   const progress   = document.getElementById("progress");
 
-  // File select & preview
   dropZone.addEventListener("click", ()=> fileInput.click());
   fileInput.addEventListener("change", ()=> renderSelectedFiles());
   dropZone.addEventListener("dragover", e=>{ e.preventDefault(); dropZone.classList.add("bg-gray-50"); });
@@ -782,50 +645,123 @@ async function init(){
     await save();
   });
 
-  // Exports
+  // Exports / Imports
   document.getElementById("exportJsonBtn").addEventListener("click", exportJSON);
-  document.getElementById("exportEmpBtn").addEventListener("click", exportEmployeesCSV);
-  document.getElementById("exportOutBtn").addEventListener("click", exportOutgoingCSV);
-  document.getElementById("exportRetBtn").addEventListener("click", exportReturnsCSV);
-
-  // Imports (CSV + JSON)
-  document.getElementById("importEmpBtn").addEventListener("click", ()=> document.getElementById("importEmpFile").click());
-  document.getElementById("importEmpFile").addEventListener("change", e=> e.target.files?.[0] && importEmployeesCSV(e.target.files[0]));
-
-  document.getElementById("importOutBtn").addEventListener("click", ()=> document.getElementById("importOutFile").click());
-  document.getElementById("importOutFile").addEventListener("change", e=> e.target.files?.[0] && importOutgoingCSV(e.target.files[0]));
-
-  document.getElementById("importRetBtn").addEventListener("click", ()=> document.getElementById("importRetFile").click());
-  document.getElementById("importRetFile").addEventListener("change", e=> e.target.files?.[0] && importIncomingCSV(e.target.files[0]));
-
-  document.getElementById("importJsonBtn").addEventListener("click", ()=> document.getElementById("importJsonFile").click());
-  document.getElementById("importJsonFile").addEventListener("change", e=>{
-    if(e.target.files && e.target.files[0]) importJSONFile(e.target.files[0]);
+  document.getElementById("exportEmpBtn").addEventListener("click", ()=>{
+    const per = computeSummary();
+    const rows = Object.values(per).map(e=>({
+      employee: e.name, cut_type: e.cutType, cut_value: e.cutValue,
+      total_sent: e.totalSent, total_cut: e.totalCut, total_expected: e.totalExpected
+    }));
+    const csv = rows.length ? toCsv(rows) : "";
+    if(!csv) return alert("Nothing to export");
+    downloadCsv(csv, `employees-${workspaceId}.csv`);
+  });
+  document.getElementById("exportOutBtn").addEventListener("click", ()=>{
+    const per = computeSummary(); const rows=[];
+    Object.values(per).forEach(e=> e.outgoings.forEach(o=> rows.push({
+      date:o.date||"", time:o.time||"", employee:e.name, amount:o.amount,
+      cut:o.computedCut, expected_return:o.expectedReturn, mode:o.mode||"",
+      ref:o.ref||"", note:o.note||""
+    })));
+    const csv = rows.length ? toCsv(rows) : "";
+    if(!csv) return alert("Nothing to export");
+    downloadCsv(csv, `outgoing-${workspaceId}.csv`);
+  });
+  document.getElementById("exportRetBtn").addEventListener("click", ()=>{
+    const rows = state.transactions.filter(t=>t.type==="return").map(r=>({
+      date:r.date||"", time:r.time||"", amount:r.amount, mode:r.mode||"",
+      ref:r.ref||"", source:r.source||"", note:r.note||""
+    }));
+    const csv = rows.length ? toCsv(rows) : "";
+    if(!csv) return alert("Nothing to export");
+    downloadCsv(csv, `incoming-${workspaceId}.csv`);
   });
 
-  // NEW: Clear Outgoing / Incoming / All
+  document.getElementById("importEmpBtn").addEventListener("click", ()=> document.getElementById("importEmpFile").click());
+  document.getElementById("importEmpFile").addEventListener("change", e=>{
+    const f=e.target.files?.[0]; if(!f) return;
+    const reader=new FileReader(); reader.onload=async ev=>{
+      parseCsv(ev.target.result).forEach(r=>{
+        const name = r.employee || r.name; if(!name) return;
+        const existing = state.employees.find(e=>e.name.toLowerCase()===name.toLowerCase());
+        const emp = existing || { id: uid(), name, cutType:"percent", cutValue:0 };
+        emp.cutType  = (r.cut_type || emp.cutType || "percent").toLowerCase()==="flat" ? "flat":"percent";
+        emp.cutValue = parseFloat(r.cut_value || emp.cutValue || 0);
+        if(!existing) state.employees.push(emp);
+      });
+      await save();
+    }; reader.readAsText(f);
+  });
+
+  document.getElementById("importOutBtn").addEventListener("click", ()=> document.getElementById("importOutFile").click());
+  document.getElementById("importOutFile").addEventListener("change", e=>{
+    const f=e.target.files?.[0]; if(!f) return;
+    const reader=new FileReader(); reader.onload=async ev=>{
+      parseCsv(ev.target.result).forEach(r=>{
+        const amount = parseFloat(r.amount||0); if(!amount) return;
+        const name = r.employee || r.name || ""; let empId="";
+        if(name){
+          const found=state.employees.find(e=>e.name.toLowerCase()===name.toLowerCase());
+          if(found) empId=found.id; else { const emp={id:uid(), name, cutType:"percent", cutValue:0}; state.employees.push(emp); empId=emp.id; }
+        }
+        state.transactions.push({
+          id:uid(), type:"outgoing", employeeId:empId, amount,
+          mode:r.mode||"", date:r.date||"", time:r.time||"", ref:r.ref||"", note:r.note||"",
+          cutOverride: r.cut?parseFloat(r.cut):null, createdAt:Date.now()
+        });
+      });
+      await save();
+    }; reader.readAsText(f);
+  });
+
+  document.getElementById("importRetBtn").addEventListener("click", ()=> document.getElementById("importRetFile").click());
+  document.getElementById("importRetFile").addEventListener("change", e=>{
+    const f=e.target.files?.[0]; if(!f) return;
+    const reader=new FileReader(); reader.onload=async ev=>{
+      parseCsv(ev.target.result).forEach(r=>{
+        const amount=parseFloat(r.amount||0); if(!amount) return;
+        state.transactions.push({
+          id:uid(), type:"return", amount,
+          mode:r.mode||"", date:r.date||"", time:r.time||"", ref:r.ref||"",
+          source:r.source||"", note:r.note||"", createdAt:Date.now()
+        });
+      }); await save();
+    }; reader.readAsText(f);
+  });
+
+  // Clear groups
   document.getElementById("clearOutgoingBtn").addEventListener("click", async ()=>{
-    if(confirm("Delete ALL outgoing transactions? This cannot be undone.")){
+    if(confirm("Delete ALL outgoing transactions in this workspace?")) {
       state.transactions = state.transactions.filter(t=>t.type!=="outgoing");
       await save();
     }
   });
   document.getElementById("clearIncomingBtn").addEventListener("click", async ()=>{
-    if(confirm("Delete ALL incoming (return) transactions? This cannot be undone.")){
+    if(confirm("Delete ALL incoming (return) transactions in this workspace?")) {
       state.transactions = state.transactions.filter(t=>t.type!=="return");
       await save();
     }
   });
   document.getElementById("clearAllBtn").addEventListener("click", async ()=>{
-    if(confirm("Delete ALL employees & transactions? This cannot be undone.")){
+    if(confirm("Delete ALL employees & transactions in this workspace?")) {
       state = {employees:[], transactions:[]};
       await save();
     }
   });
 
-  // OCR
-  processBtn.addEventListener("click", async ()=>{
-    const files = fileInput.files;
+  // Import JSON
+  document.getElementById("importJsonBtn").addEventListener("click", ()=> document.getElementById("importJsonFile").click());
+  document.getElementById("importJsonFile").addEventListener("change", e=>{
+    const f=e.target.files?.[0]; if(f) importJSONFile(f);
+  });
+
+  // OCR flow
+  document.getElementById("processBtn").addEventListener("click", async ()=>{
+    const input = document.getElementById("fileInput");
+    const files = input.files;
+    const parsedList = document.getElementById("parsedList");
+    const progress   = document.getElementById("progress");
     if(!files || !files.length){ alert("Please choose screenshots"); return; }
     progress.textContent = "Running OCR...";
     parsedList.innerHTML = "";
@@ -840,8 +776,7 @@ async function init(){
         console.error(err);
         parsedList.appendChild( el("div","text-red-600 text-sm",`Failed OCR for ${file.name}`) );
       }finally{
-        done++;
-        progress.textContent = `Processed ${done}/${files.length}`;
+        done++; progress.textContent = `Processed ${done}/${files.length}`;
       }
     }
     progress.textContent += " — review & Save.";
