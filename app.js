@@ -1,8 +1,31 @@
-// =================== Workspace-based persistence ===================
+// =================== Workspace-based persistence (resilient) ===================
 let state = { employees: [], transactions: [] };
 let auth = null, db = null;
 let workspaceId = null;      // e.g. "resy-2025"
 const WS_KEY = "moneytracker_workspace";
+
+// ---- tiny logger banner so the app never "goes silent"
+function showWarn(msg){
+  console.warn(msg);
+  if (!document.getElementById("__app_warn")) {
+    const d = document.createElement("div");
+    d.id="__app_warn";
+    d.style.cssText="position:fixed;left:8px;bottom:8px;right:8px;z-index:9999;padding:8px 12px;border-radius:10px;background:#fff7ed;border:1px solid #fed7aa;color:#7c2d12;font-size:12px;display:none";
+    document.body.appendChild(d);
+  }
+  const el = document.getElementById("__app_warn");
+  el.textContent = msg;
+  el.style.display = "block";
+  setTimeout(()=>{ el.style.display="none"; }, 6000);
+}
+
+// ---- global guards: never let errors kill all listeners
+window.addEventListener("error", (e)=> {
+  showWarn("Unexpected error: " + (e?.message || e));
+});
+window.addEventListener("unhandledrejection", (e)=> {
+  showWarn("Unexpected async error: " + (e?.reason?.message || e?.reason || e));
+});
 
 // ---------- Firestore doc for this workspace ----------
 function workspaceDoc(){
@@ -11,19 +34,30 @@ function workspaceDoc(){
 }
 
 async function save(){
-  if(!workspaceId) return;
-  await workspaceDoc().set(state, { merge: true });
-  renderAll();
+  try{
+    if(!workspaceId) return;
+    await workspaceDoc().set(state, { merge: true });
+    renderAll();
+  }catch(err){
+    showWarn("Save failed (will keep data in memory). Check internet/Firestore rules."); 
+    console.error(err);
+  }
 }
+
 async function load(){
-  if(!workspaceId) return;
-  const snap = await workspaceDoc().get();
-  if(snap.exists){
-    const data = snap.data() || {};
-    state.employees   = Array.isArray(data.employees) ? data.employees : [];
-    state.transactions = Array.isArray(data.transactions) ? data.transactions : [];
-  }else{
-    await workspaceDoc().set(state);
+  try{
+    if(!workspaceId) return;
+    const snap = await workspaceDoc().get();
+    if(snap.exists){
+      const data = snap.data() || {};
+      state.employees   = Array.isArray(data.employees) ? data.employees : [];
+      state.transactions = Array.isArray(data.transactions) ? data.transactions : [];
+    }else{
+      await workspaceDoc().set(state);
+    }
+  }catch(err){
+    showWarn("Load failed. Using local in-memory state for now.");
+    console.error(err);
   }
 }
 
@@ -31,10 +65,12 @@ async function load(){
 async function initAuth(){
   auth = firebase.auth();
   db   = firebase.firestore();
-  try { await auth.signInAnonymously(); }
-  catch (err) {
-    console.error("Anonymous auth failed:", err);
-    alert("Auth blocked by domain. Add your GitHub Pages host under Firebase → Authentication → Authorized domains.");
+  try {
+    await auth.signInAnonymously();
+  } catch (err) {
+    // Don’t block the app; you can still use local state and export/import
+    showWarn("Anonymous auth failed. Add your GitHub Pages host under Firebase → Authentication → Authorized domains.");
+    console.error(err);
   }
 }
 
@@ -48,6 +84,7 @@ function openWorkspaceModal(){
   const modal = document.getElementById("wsModal");
   const inp   = document.getElementById("wsInput");
   const errEl = document.getElementById("wsError");
+  if(!modal) return;
   inp.value = workspaceId || "";
   errEl.classList.add("hidden");
   modal.classList.remove("hidden");
@@ -55,14 +92,18 @@ function openWorkspaceModal(){
 }
 function closeWorkspaceModal(){
   const modal = document.getElementById("wsModal");
+  if(!modal) return;
   modal.classList.add("hidden");
   modal.classList.remove("flex");
 }
 async function setWorkspace(id){
-  workspaceId = id.trim();
+  workspaceId = (id||"").trim();
   if(!workspaceId){ return; }
-  localStorage.setItem(WS_KEY, workspaceId);
-  document.getElementById("wsBadge").textContent = `workspace: ${workspaceId}`;
+  try{
+    localStorage.setItem(WS_KEY, workspaceId);
+  }catch(_){} // Safari private mode can throw; ignore
+  const badge = document.getElementById("wsBadge");
+  if (badge) badge.textContent = `workspace: ${workspaceId}`;
   await load();
   renderAll();
 }
@@ -73,18 +114,32 @@ function el(tag, cls="", html=""){ const e=document.createElement(tag); if(cls) 
 function fmtMoney(n){ if(n==null || isNaN(n)) return "₹ 0"; return "₹ " + Number(n).toLocaleString(undefined,{maximumFractionDigits:2}); }
 function parseNumber(s){ if(!s) return NaN; return parseFloat(String(s).replace(/[^\d.]/g,"")); }
 const CSV_SEP = ",";
+
+function stripBOM(t){ return t && t.charCodeAt(0)===0xFEFF ? t.slice(1) : t; }
 function parseCsv(text){
-  const rows = []; let i=0, cur="", q=false; const push=()=>{ row.push(cur); cur=""; }; let row=[];
-  while(i<text.length){ const c=text[i];
+  text = stripBOM(String(text||"")).replace(/\r\n/g,"\n").replace(/\r/g,"\n");
+  if(!text.trim()) return [];
+  const rows = [];
+  let i=0, cur="", q=false; const push=()=>{ row.push(cur); cur=""; };
+  let row=[];
+  while(i<text.length){
+    const c=text[i];
     if(c==='\"'){ if(q && text[i+1]==='\"'){ cur+='\"'; i++; } else q=!q; }
     else if(c===',' && !q){ push(); }
-    else if((c==='\n' || c==='\r') && !q){ if(c==='\r' && text[i+1]==='\n') i++; push(); rows.push(row); row=[]; }
-    else { cur+=c; } i++; }
+    else if(c==='\n' && !q){ push(); rows.push(row); row=[]; }
+    else { cur+=c; }
+    i++;
+  }
   if(cur.length || row.length){ push(); rows.push(row); }
   if(rows.length===0) return [];
-  const header = rows[0].map(h=>h.trim().toLowerCase());
-  return rows.slice(1).filter(r=>r.length).map(r=>{
-    const obj={}; for(let k=0;k<header.length;k++){ obj[header[k]] = (r[k]??"").trim(); } return obj;
+  // Trim trailing empty lines
+  while(rows.length && rows[rows.length-1].every(cell=>!String(cell||"").trim())) rows.pop();
+
+  const header = rows[0].map(h=>String(h||"").trim().toLowerCase());
+  return rows.slice(1).filter(r=>r.some(x=>String(x||"").trim().length)).map(r=>{
+    const obj={};
+    for(let k=0;k<header.length;k++){ obj[header[k]] = String(r[k]??"").trim(); }
+    return obj;
   });
 }
 function toCsv(rows){
@@ -112,6 +167,8 @@ function importJSONFile(file){
       if(obj && obj.employees && obj.transactions){ state=obj; await save(); }
       else alert("Invalid JSON structure.");
     }catch(err){ alert("Failed to parse JSON."); }
+    // allow selecting same file again
+    try{ e.target.value=""; }catch(_){}
   };
   reader.readAsText(file);
 }
@@ -119,6 +176,7 @@ function importJSONFile(file){
 // =================== Employees UI ===================
 function renderEmployees(){
   const tbody = document.getElementById("employeeTbody");
+  if(!tbody) return;
   tbody.innerHTML = "";
   state.employees.forEach(emp=>{
     const tr = el("tr");
@@ -160,7 +218,9 @@ function renderEmployees(){
   });
 
   const sel = document.getElementById("employeeSelect");
-  sel.innerHTML = `<option value="">(Auto / Choose)</option>` + state.employees.map(e=> `<option value="${e.id}">${e.name}</option>`).join("");
+  if (sel){
+    sel.innerHTML = `<option value="">(Auto / Choose)</option>` + state.employees.map(e=> `<option value="${e.id}">${e.name}</option>`).join("");
+  }
 }
 
 // =================== OCR helpers ===================
@@ -305,6 +365,7 @@ function computeOverallTotals(){
 // =================== Rendering ===================
 function renderSummary(){
   const overall = document.getElementById("overallTotals");
+  if(!overall) return;
   const ot = computeOverallTotals();
   overall.innerHTML = `
     <div class="border rounded-lg p-3 bg-white"><div class="text-xs text-gray-500">Total Sent</div><div class="font-medium">${fmtMoney(ot.totalSent)}</div></div>
@@ -314,7 +375,7 @@ function renderSummary(){
   `;
 
   const per = computeSummary();
-  const wrap = document.getElementById("summaryCards"); wrap.innerHTML = "";
+  const wrap = document.getElementById("summaryCards"); if(!wrap) return; wrap.innerHTML = "";
   Object.values(per).forEach(e=>{
     const card = el("div","rounded-xl border p-4 bg-white shadow-sm");
     card.innerHTML = `
@@ -335,6 +396,7 @@ function renderSummary(){
 function renderTransactions(){
   const outT = document.getElementById("outgoingTbody");
   const retT = document.getElementById("returnTbody");
+  if(!outT || !retT) return;
   outT.innerHTML=""; retT.innerHTML="";
 
   const per = computeSummary();
@@ -469,6 +531,7 @@ function openEditDialog(t){
 function renderSelectedFiles(){
   const wrap = document.getElementById("selectedFiles");
   const input = document.getElementById("fileInput");
+  if(!wrap || !input) return;
   const files = input.files;
   if(!files || !files.length){
     wrap.innerHTML = `<div class="text-sm text-gray-500">No files selected.</div>`;
@@ -569,10 +632,10 @@ function makeParsedCard(parsed, imgUrl){
   `;
   const typeSel = card.querySelector('[data-f="type"]');
   const empSel  = card.querySelector('[data-f="employeeId"]');
-  const dirSel  = document.getElementById("directionSelect").value;
+  const dirSel  = document.getElementById("directionSelect")?.value || "auto";
   if(dirSel==="outgoing" || dirSel==="return"){ typeSel.value = dirSel; }
   else if(parsed.direction==="outgoing" || parsed.direction==="return"){ typeSel.value = parsed.direction; }
-  const preEmp = document.getElementById("employeeSelect").value || parsed.employeeId || "";
+  const preEmp = document.getElementById("employeeSelect")?.value || parsed.employeeId || "";
   if(preEmp) empSel.value = preEmp;
 
   card.querySelector("button").addEventListener("click", ()=> card.remove());
@@ -605,21 +668,30 @@ function makeParsedCard(parsed, imgUrl){
 function renderAll(){ renderEmployees(); renderSummary(); renderTransactions(); }
 
 async function init(){
-  await initAuth();
+  // Never let auth error block UI binding
+  try { await initAuth(); } catch(e){ showWarn("Auth init error; continuing offline mode."); }
 
   // Workspace controls
-  const wsStored = localStorage.getItem(WS_KEY);
-  if(wsStored){ await setWorkspace(wsStored); }
-  else { openWorkspaceModal(); }
+  try{
+    const wsStored = (()=>{ try{return localStorage.getItem(WS_KEY);}catch(_){return null;} })();
+    if(wsStored){ await setWorkspace(wsStored); }
+    else { openWorkspaceModal(); }
+  }catch(e){
+    showWarn("Could not access workspace storage; continuing without preset code.");
+    console.error(e);
+  }
 
-  document.getElementById("switchWorkspaceBtn").addEventListener("click", openWorkspaceModal);
-  document.getElementById("wsGenerate").addEventListener("click", ()=>{
-    document.getElementById("wsInput").value = randomCode();
+  // Workspace modal buttons
+  const switchBtn = document.getElementById("switchWorkspaceBtn");
+  switchBtn?.addEventListener("click", openWorkspaceModal);
+  document.getElementById("wsGenerate")?.addEventListener("click", ()=>{
+    const i = document.getElementById("wsInput"); if(i) i.value = randomCode();
   });
-  document.getElementById("wsCancel").addEventListener("click", closeWorkspaceModal);
-  document.getElementById("wsConfirm").addEventListener("click", async ()=>{
-    const code = document.getElementById("wsInput").value.trim();
-    if(!code){ document.getElementById("wsError").classList.remove("hidden"); return; }
+  document.getElementById("wsCancel")?.addEventListener("click", closeWorkspaceModal);
+  document.getElementById("wsConfirm")?.addEventListener("click", async ()=>{
+    const i = document.getElementById("wsInput");
+    const code = (i?.value||"").trim();
+    if(!code){ document.getElementById("wsError")?.classList.remove("hidden"); return; }
     closeWorkspaceModal(); await setWorkspace(code);
   });
 
@@ -630,24 +702,27 @@ async function init(){
   const parsedList = document.getElementById("parsedList");
   const progress   = document.getElementById("progress");
 
-  dropZone.addEventListener("click", ()=> fileInput.click());
-  fileInput.addEventListener("change", ()=> renderSelectedFiles());
-  dropZone.addEventListener("dragover", e=>{ e.preventDefault(); dropZone.classList.add("bg-gray-50"); });
-  dropZone.addEventListener("dragleave", ()=> dropZone.classList.remove("bg-gray-50"));
-  dropZone.addEventListener("drop", e=>{
-    e.preventDefault(); fileInput.files = e.dataTransfer.files;
+  dropZone?.addEventListener("click", ()=> fileInput?.click());
+  fileInput?.addEventListener("change", ()=> { renderSelectedFiles(); /* reset to allow re-pick same file later */ });
+
+  dropZone?.addEventListener("dragover", e=>{ e.preventDefault(); dropZone.classList.add("bg-gray-50"); });
+  dropZone?.addEventListener("dragleave", ()=> dropZone.classList.remove("bg-gray-50"));
+  dropZone?.addEventListener("drop", e=>{
+    e.preventDefault();
+    if(fileInput){ fileInput.files = e.dataTransfer.files; }
     dropZone.classList.remove("bg-gray-50"); renderSelectedFiles();
   });
   renderSelectedFiles();
 
-  document.getElementById("addEmployeeBtn").addEventListener("click", async ()=>{
+  document.getElementById("addEmployeeBtn")?.addEventListener("click", async ()=>{
     state.employees.push({id:uid(), name:"New Employee", cutType:"percent", cutValue:0});
     await save();
   });
 
   // Exports / Imports
-  document.getElementById("exportJsonBtn").addEventListener("click", exportJSON);
-  document.getElementById("exportEmpBtn").addEventListener("click", ()=>{
+  document.getElementById("exportJsonBtn")?.addEventListener("click", exportJSON);
+
+  document.getElementById("exportEmpBtn")?.addEventListener("click", ()=>{
     const per = computeSummary();
     const rows = Object.values(per).map(e=>({
       employee: e.name, cut_type: e.cutType, cut_value: e.cutValue,
@@ -655,9 +730,10 @@ async function init(){
     }));
     const csv = rows.length ? toCsv(rows) : "";
     if(!csv) return alert("Nothing to export");
-    downloadCsv(csv, `employees-${workspaceId}.csv`);
+    downloadCsv(csv, `employees-${workspaceId||"ws"}.csv`);
   });
-  document.getElementById("exportOutBtn").addEventListener("click", ()=>{
+
+  document.getElementById("exportOutBtn")?.addEventListener("click", ()=>{
     const per = computeSummary(); const rows=[];
     Object.values(per).forEach(e=> e.outgoings.forEach(o=> rows.push({
       date:o.date||"", time:o.time||"", employee:e.name, amount:o.amount,
@@ -666,24 +742,31 @@ async function init(){
     })));
     const csv = rows.length ? toCsv(rows) : "";
     if(!csv) return alert("Nothing to export");
-    downloadCsv(csv, `outgoing-${workspaceId}.csv`);
+    downloadCsv(csv, `outgoing-${workspaceId||"ws"}.csv`);
   });
-  document.getElementById("exportRetBtn").addEventListener("click", ()=>{
+
+  document.getElementById("exportRetBtn")?.addEventListener("click", ()=>{
     const rows = state.transactions.filter(t=>t.type==="return").map(r=>({
       date:r.date||"", time:r.time||"", amount:r.amount, mode:r.mode||"",
       ref:r.ref||"", source:r.source||"", note:r.note||""
     }));
     const csv = rows.length ? toCsv(rows) : "";
     if(!csv) return alert("Nothing to export");
-    downloadCsv(csv, `incoming-${workspaceId}.csv`);
+    downloadCsv(csv, `incoming-${workspaceId||"ws"}.csv`);
   });
 
-  document.getElementById("importEmpBtn").addEventListener("click", ()=> document.getElementById("importEmpFile").click());
-  document.getElementById("importEmpFile").addEventListener("change", e=>{
-    const f=e.target.files?.[0]; if(!f) return;
-    const reader=new FileReader(); reader.onload=async ev=>{
+  // IMPORT EMPLOYEES
+  const importEmpBtn  = document.getElementById("importEmpBtn");
+  const importEmpFile = document.getElementById("importEmpFile");
+  importEmpBtn?.addEventListener("click", ()=> importEmpFile?.click());
+  importEmpFile?.addEventListener("change", e=>{
+    const f=e.target.files && e.target.files[0];
+    if(!f) return;
+    const reader=new FileReader();
+    reader.onload=async ev=>{
       parseCsv(ev.target.result).forEach(r=>{
-        const name = r.employee || r.name; if(!name) return;
+        const name = r.employee || r.name;
+        if(!name) return;
         const existing = state.employees.find(e=>e.name.toLowerCase()===name.toLowerCase());
         const emp = existing || { id: uid(), name, cutType:"percent", cutValue:0 };
         emp.cutType  = (r.cut_type || emp.cutType || "percent").toLowerCase()==="flat" ? "flat":"percent";
@@ -691,13 +774,21 @@ async function init(){
         if(!existing) state.employees.push(emp);
       });
       await save();
-    }; reader.readAsText(f);
+      // allow re-selecting same file
+      try{ e.target.value=""; }catch(_){}
+    };
+    reader.readAsText(f);
   });
 
-  document.getElementById("importOutBtn").addEventListener("click", ()=> document.getElementById("importOutFile").click());
-  document.getElementById("importOutFile").addEventListener("change", e=>{
-    const f=e.target.files?.[0]; if(!f) return;
-    const reader=new FileReader(); reader.onload=async ev=>{
+  // IMPORT OUTGOING
+  const importOutBtn  = document.getElementById("importOutBtn");
+  const importOutFile = document.getElementById("importOutFile");
+  importOutBtn?.addEventListener("click", ()=> importOutFile?.click());
+  importOutFile?.addEventListener("change", e=>{
+    const f=e.target.files && e.target.files[0];
+    if(!f) return;
+    const reader=new FileReader();
+    reader.onload=async ev=>{
       parseCsv(ev.target.result).forEach(r=>{
         const amount = parseFloat(r.amount||0); if(!amount) return;
         const name = r.employee || r.name || ""; let empId="";
@@ -712,13 +803,20 @@ async function init(){
         });
       });
       await save();
-    }; reader.readAsText(f);
+      try{ e.target.value=""; }catch(_){}
+    };
+    reader.readAsText(f);
   });
 
-  document.getElementById("importRetBtn").addEventListener("click", ()=> document.getElementById("importRetFile").click());
-  document.getElementById("importRetFile").addEventListener("change", e=>{
-    const f=e.target.files?.[0]; if(!f) return;
-    const reader=new FileReader(); reader.onload=async ev=>{
+  // IMPORT RETURNS
+  const importRetBtn  = document.getElementById("importRetBtn");
+  const importRetFile = document.getElementById("importRetFile");
+  importRetBtn?.addEventListener("click", ()=> importRetFile?.click());
+  importRetFile?.addEventListener("change", e=>{
+    const f=e.target.files && e.target.files[0];
+    if(!f) return;
+    const reader=new FileReader();
+    reader.onload=async ev=>{
       parseCsv(ev.target.result).forEach(r=>{
         const amount=parseFloat(r.amount||0); if(!amount) return;
         state.transactions.push({
@@ -726,24 +824,27 @@ async function init(){
           mode:r.mode||"", date:r.date||"", time:r.time||"", ref:r.ref||"",
           source:r.source||"", note:r.note||"", createdAt:Date.now()
         });
-      }); await save();
-    }; reader.readAsText(f);
+      });
+      await save();
+      try{ e.target.value=""; }catch(_){}
+    };
+    reader.readAsText(f);
   });
 
   // Clear groups
-  document.getElementById("clearOutgoingBtn").addEventListener("click", async ()=>{
+  document.getElementById("clearOutgoingBtn")?.addEventListener("click", async ()=>{
     if(confirm("Delete ALL outgoing transactions in this workspace?")) {
       state.transactions = state.transactions.filter(t=>t.type!=="outgoing");
       await save();
     }
   });
-  document.getElementById("clearIncomingBtn").addEventListener("click", async ()=>{
+  document.getElementById("clearIncomingBtn")?.addEventListener("click", async ()=>{
     if(confirm("Delete ALL incoming (return) transactions in this workspace?")) {
       state.transactions = state.transactions.filter(t=>t.type!=="return");
       await save();
     }
   });
-  document.getElementById("clearAllBtn").addEventListener("click", async ()=>{
+  document.getElementById("clearAllBtn")?.addEventListener("click", async ()=>{
     if(confirm("Delete ALL employees & transactions in this workspace?")) {
       state = {employees:[], transactions:[]};
       await save();
@@ -751,15 +852,16 @@ async function init(){
   });
 
   // Import JSON
-  document.getElementById("importJsonBtn").addEventListener("click", ()=> document.getElementById("importJsonFile").click());
-  document.getElementById("importJsonFile").addEventListener("change", e=>{
-    const f=e.target.files?.[0]; if(f) importJSONFile(f);
+  document.getElementById("importJsonBtn")?.addEventListener("click", ()=> document.getElementById("importJsonFile")?.click());
+  document.getElementById("importJsonFile")?.addEventListener("change", e=>{
+    const f=e.target.files && e.target.files[0];
+    if(f) importJSONFile(f);
   });
 
   // OCR flow
-  document.getElementById("processBtn").addEventListener("click", async ()=>{
+  processBtn?.addEventListener("click", async ()=>{
     const input = document.getElementById("fileInput");
-    const files = input.files;
+    const files = input?.files;
     const parsedList = document.getElementById("parsedList");
     const progress   = document.getElementById("progress");
     if(!files || !files.length){ alert("Please choose screenshots"); return; }
@@ -780,7 +882,13 @@ async function init(){
       }
     }
     progress.textContent += " — review & Save.";
+    // reset file input so same files can be imported again later
+    try{ input.value=""; }catch(_){}
+    renderSelectedFiles();
   });
+
+  // initial render (even before workspace loads, to attach handlers)
+  renderAll();
 }
 
 window.addEventListener("DOMContentLoaded", init);
