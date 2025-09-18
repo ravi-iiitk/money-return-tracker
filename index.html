@@ -6,30 +6,30 @@
   <title>💸 Screenshot Money Tracker — Workspace Mode</title>
   <meta name="theme-color" content="#2563eb" />
   <script src="https://cdn.tailwindcss.com"></script>
-  <style>html,body{height:100%}.glass{backdrop-filter:saturate(180%) blur(8px)}</style>
+  <style>
+    html,body{height:100%}
+    .glass{backdrop-filter:saturate(180%) blur(8px)}
+  </style>
 
-  <!-- Tesseract.js (OCR) -->
+  <!-- OCR -->
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 
-  <!-- Firebase compat SDKs -->
+  <!-- PDF (for statement parser) -->
+  <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.min.js"></script>
+  <script>
+    // make pdf.js available as pdfjsLib (what app.js expects)
+    window.pdfjsLib = window['pdfjs-dist/build/pdf'];
+  </script>
+
+  <!-- XLSX (for statement parser) -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+
+  <!-- Firebase compat SDKs (app.js will init) -->
   <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
-
-  <script>
-    // 🔁 REPLACE with YOUR Firebase project config
-    const firebaseConfig = {
-        apiKey: "AIzaSyDuMw1wk70w38NQf_1pQZbN-Y1z7x4qTaM",
-        authDomain: "money-tracker-41c53.firebaseapp.com",
-        projectId: "money-tracker-41c53",
-        storageBucket: "money-tracker-41c53.firebasestorage.app",
-        messagingSenderId: "974884316198",
-        appId: "1:974884316198:web:af8107569eea553679f2e7",
-        measurementId: "G-6REWB0V3LC"
-    };
-    firebase.initializeApp(firebaseConfig);
-  </script>
 </head>
+
 <body class="bg-gradient-to-b from-sky-50 via-white to-indigo-50 text-gray-900">
 
   <!-- Header -->
@@ -55,14 +55,14 @@
       <h3 class="text-lg font-semibold">Choose a Workspace</h3>
       <p class="text-sm text-gray-600 mt-1">Enter a code to load/save your data. Use the <b>same code</b> on every device.</p>
       <div class="mt-3 flex gap-2">
-        <input id="wsInput" class="flex-1 border rounded-lg px-3 py-2" placeholder="e.g. resy-2025" />
+        <input id="wsInput" class="flex-1 border rounded-lg px-3 py-2" placeholder="e.g. lotus-ab12" />
         <button id="wsGenerate" class="px-3 py-2 rounded-lg border hover:bg-gray-100">Generate</button>
       </div>
       <div class="mt-4 flex justify-end gap-2">
         <button id="wsCancel" class="px-3 py-1.5 rounded-lg border">Cancel</button>
         <button id="wsConfirm" class="px-3 py-1.5 rounded-lg bg-indigo-600 text-white">Use Workspace</button>
       </div>
-      <p id="wsError" class="text-xs text-red-600 mt-2 hidden">Error. Try a different code.</p>
+      <p id="wsError" class="text-xs text-red-600 mt-2 hidden">Workspace code is required.</p>
     </div>
   </div>
 
@@ -73,7 +73,7 @@
       <div class="p-5 border-b bg-gradient-to-r from-indigo-50 to-sky-50 rounded-t-2xl">
         <div class="flex items-center justify-between gap-2">
           <h2 class="text-lg font-semibold">Employees & Cut Rules</h2>
-          <div class="flex gap-2">
+          <div class="flex gap-2 flex-wrap">
             <button id="addEmployeeBtn" class="px-3 py-1.5 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700">Add Employee</button>
             <button id="importEmpBtn" class="px-3 py-1.5 rounded-lg border hover:bg-gray-100">Import Employees (CSV)</button>
             <input id="importEmpFile" type="file" accept=".csv,text/csv" class="hidden" />
@@ -139,7 +139,7 @@
       <div class="p-5 border-b bg-gradient-to-r from-sky-50 to-indigo-50 rounded-t-2xl">
         <div class="flex items-center justify-between gap-2">
           <h2 class="text-lg font-semibold">Per-Employee Summary</h2>
-          <div class="flex gap-2 flex-wrap">
+          <div class="grid grid-cols-2 md:flex md:flex-wrap gap-2">
             <button id="exportEmpBtn" class="px-3 py-1.5 rounded-lg border hover:bg-gray-100">Export Employees</button>
             <button id="exportOutBtn" class="px-3 py-1.5 rounded-lg border hover:bg-gray-100">Export Outgoing</button>
             <button id="exportRetBtn" class="px-3 py-1.5 rounded-lg border hover:bg-gray-100">Export Incoming</button>
@@ -148,6 +148,10 @@
             <input id="importOutFile" type="file" accept=".csv,text/csv" class="hidden" />
             <button id="importRetBtn" class="px-3 py-1.5 rounded-lg border hover:bg-gray-100">Import Incoming (CSV)</button>
             <input id="importRetFile" type="file" accept=".csv,text/csv" class="hidden" />
+
+            <!-- Bank statement matcher -->
+            <button id="importStmtBtn" class="px-3 py-1.5 rounded-lg border hover:bg-gray-100">Match from Bank Statement</button>
+            <input id="importStmtFile" type="file" accept=".csv,.xls,.xlsx,.pdf,.txt" class="hidden" />
 
             <button id="clearOutgoingBtn" class="px-3 py-1.5 rounded-lg border text-red-600 hover:bg-red-50">Clear Outgoing</button>
             <button id="clearIncomingBtn" class="px-3 py-1.5 rounded-lg border text-red-600 hover:bg-red-50">Clear Incoming</button>
