@@ -1,29 +1,6 @@
-// ======= Firestore persistence (Anonymous Auth) =======
+// ======= Firestore + Google Sign-In (anonymous fallback) =======
 let state = { employees: [], transactions: [] };
 let auth = null, db = null, currentUser = null;
-
-async function initPersistence(){
-  auth = firebase.auth();
-  db   = firebase.firestore();
-
-  await auth.signInAnonymously().catch(console.error);
-
-  // Wait for the user
-  if (!auth.currentUser) {
-    await new Promise(resolve => {
-      const unsub = auth.onAuthStateChanged(u => { if (u){ currentUser = u; unsub(); resolve(); }});
-    });
-  } else {
-    currentUser = auth.currentUser;
-  }
-
-  // Show UID on header (debug)
-  const uidBadge = document.getElementById("uidBadge");
-  if (uidBadge) { uidBadge.textContent = `uid: ${currentUser.uid}`; }
-
-  await load();   // load from Firestore
-  renderAll();    // first render
-}
 
 function stateDoc(){
   if(!db || !currentUser) throw new Error("Firestore not ready");
@@ -56,7 +33,57 @@ async function load(){
   }
 }
 
-// ======= Utilities =======
+async function initPersistence(){
+  auth = firebase.auth();
+  db   = firebase.firestore();
+
+  // Start anonymous so app works immediately
+  await auth.signInAnonymously();
+
+  const signInBtn  = document.getElementById("googleSignIn");
+  const signOutBtn = document.getElementById("signOut");
+
+  signInBtn?.addEventListener("click", async ()=>{
+    try{
+      const provider = new firebase.auth.GoogleAuthProvider();
+      if (auth.currentUser && auth.currentUser.isAnonymous) {
+        await auth.currentUser.linkWithPopup(provider);  // keep same UID/data
+      } else {
+        await auth.signInWithPopup(provider);
+      }
+    }catch(err){
+      console.error("Google sign-in failed:", err);
+      alert("Google sign-in failed. See console.");
+    }
+  });
+
+  signOutBtn?.addEventListener("click", async ()=>{
+    await auth.signOut();
+    await auth.signInAnonymously(); // keep app usable
+  });
+
+  auth.onAuthStateChanged(async (u)=>{
+    currentUser = u || null;
+    // Header tweaks
+    const uidBadge = document.getElementById("uidBadge");
+    if (uidBadge) uidBadge.textContent = currentUser ? `uid: ${currentUser.uid}` : "";
+
+    if (currentUser && !currentUser.isAnonymous) {
+      signInBtn?.classList.add("hidden");
+      signOutBtn?.classList.remove("hidden");
+    } else {
+      signOutBtn?.classList.add("hidden");
+      signInBtn?.classList.remove("hidden");
+    }
+
+    if (currentUser) {
+      await load();
+      renderAll();
+    }
+  });
+}
+
+// ======= Utilities / CSV / JSON =======
 function uid(){ return Math.random().toString(36).slice(2); }
 function el(tag, cls="", html=""){ const e=document.createElement(tag); if(cls) e.className=cls; if(html) e.innerHTML=html; return e; }
 function fmtMoney(n){ if(n==null || isNaN(n)) return "₹ 0"; return "₹ " + Number(n).toLocaleString(undefined,{maximumFractionDigits:2}); }
@@ -64,7 +91,6 @@ function parseNumber(s){ if(!s) return NaN; return parseFloat(String(s).replace(
 const CSV_SEP = ",";
 
 function parseCsv(text){
-  // very small CSV parser for quoted commas
   const rows = [];
   let i=0, cur="", q=false; const push=()=>{ row.push(cur); cur=""; };
   let row=[];
@@ -116,7 +142,7 @@ function importJSONFile(file){
   reader.readAsText(file);
 }
 
-// ======= Employees =======
+// ======= Employees UI =======
 function renderEmployees(){
   const tbody = document.getElementById("employeeTbody");
   tbody.innerHTML = "";
@@ -163,7 +189,7 @@ function renderEmployees(){
   sel.innerHTML = `<option value="">(Auto / Choose)</option>` + state.employees.map(e=> `<option value="${e.id}">${e.name}</option>`).join("");
 }
 
-// ======= OCR Parsing =======
+// ======= OCR helpers =======
 function detectDirection(text){
   const t = text.toLowerCase();
   const isReturn   = /(credited|received|payment received|incoming)/.test(t);
@@ -190,36 +216,26 @@ function wordsToNumber(raw){
   }
   total+=current; return seen ? (total||null) : null;
 }
-function lineLooksLikeTime(line){
-  return /\d{1,2}:\d{2}/.test(line) && /(am|pm)\b/i.test(line);
-}
-function cleanNumericToken(s){
-  return s.replace(/[Oo]/g,"0").replace(/[Il]/g,"1").replace(/[,\s]/g,"");
-}
+function lineLooksLikeTime(line){ return /\d{1,2}:\d{2}/.test(line) && /(am|pm)\b/i.test(line); }
+function cleanNumericToken(s){ return s.replace(/[Oo]/g,"0").replace(/[Il]/g,"1").replace(/[,\s]/g,""); }
 function extractAmount(text){
   const add = (val, weight) => { if (val == null || isNaN(val)) return; cands.push({ val: Number(val), weight }); };
   const lines = text.split(/\n+/).map(s => s.trim()).filter(Boolean);
   const cands = [];
-
-  // Currency-marked lines (very strong)
   for (const line of lines) {
     if (/(₹|rs\.?|inr)/i.test(line)) {
       const m = line.match(/(?:₹|rs\.?|inr)\s*([0-9][0-9\s,]*(?:\.\d{1,2})?)/i);
       if (m) add(parseFloat(cleanNumericToken(m[1])), 5);
     }
   }
-  // Label lines
   for (const line of lines) {
     if (/(total amount|amount|debited|credited|paid|transfer)/i.test(line)) {
       const m = line.match(/([0-9][0-9\s,]*(?:\.\d{1,2})?)/);
       if (m) add(parseFloat(cleanNumericToken(m[1])), 4);
     }
   }
-  // Word numbers
   const wm = text.match(/([A-Za-z\s\-]+)\s+(?:rupees|rs\.?|only)\b/i);
   if (wm) { const w = wordsToNumber(wm[1]); if (w != null) add(w, 3); }
-
-  // Fallback numerics (skip time-like lines)
   for (const line of lines) {
     if (lineLooksLikeTime(line)) continue;
     const ms = Array.from(line.matchAll(/([0-9][0-9\s,]*(?:\.\d{1,2})?)/g));
@@ -346,6 +362,7 @@ function renderTransactions(){
   const outT = document.getElementById("outgoingTbody");
   const retT = document.getElementById("returnTbody");
   outT.innerHTML=""; retT.innerHTML="";
+
   const per = computeSummary();
 
   state.transactions.slice().sort((a,b)=>(a.createdAt||0)-(b.createdAt||0)).forEach(t=>{
@@ -737,11 +754,11 @@ function makeParsedCard(parsed, imgUrl){
   return card;
 }
 
-// ======= Init =======
+// ======= Init / buttons =======
 function renderAll(){ renderEmployees(); renderSummary(); renderTransactions(); }
 
 async function init(){
-  await initPersistence();     // Firestore auth + load + first render
+  await initPersistence();     // Firestore auth + load
 
   const dropZone   = document.getElementById("dropZone");
   const fileInput  = document.getElementById("fileInput");
@@ -772,28 +789,35 @@ async function init(){
   document.getElementById("exportRetBtn").addEventListener("click", exportReturnsCSV);
 
   // Imports (CSV + JSON)
-  const importEmpBtn = document.getElementById("importEmpBtn");
-  const importEmpFile= document.getElementById("importEmpFile");
-  importEmpBtn.addEventListener("click", ()=> importEmpFile.click());
-  importEmpFile.addEventListener("change", e=> e.target.files?.[0] && importEmployeesCSV(e.target.files[0]));
+  document.getElementById("importEmpBtn").addEventListener("click", ()=> document.getElementById("importEmpFile").click());
+  document.getElementById("importEmpFile").addEventListener("change", e=> e.target.files?.[0] && importEmployeesCSV(e.target.files[0]));
 
-  const importOutBtn = document.getElementById("importOutBtn");
-  const importOutFile= document.getElementById("importOutFile");
-  importOutBtn.addEventListener("click", ()=> importOutFile.click());
-  importOutFile.addEventListener("change", e=> e.target.files?.[0] && importOutgoingCSV(e.target.files[0]));
+  document.getElementById("importOutBtn").addEventListener("click", ()=> document.getElementById("importOutFile").click());
+  document.getElementById("importOutFile").addEventListener("change", e=> e.target.files?.[0] && importOutgoingCSV(e.target.files[0]));
 
-  const importRetBtn = document.getElementById("importRetBtn");
-  const importRetFile= document.getElementById("importRetFile");
-  importRetBtn.addEventListener("click", ()=> importRetFile.click());
-  importRetFile.addEventListener("change", e=> e.target.files?.[0] && importIncomingCSV(e.target.files[0]));
+  document.getElementById("importRetBtn").addEventListener("click", ()=> document.getElementById("importRetFile").click());
+  document.getElementById("importRetFile").addEventListener("change", e=> e.target.files?.[0] && importIncomingCSV(e.target.files[0]));
 
   document.getElementById("importJsonBtn").addEventListener("click", ()=> document.getElementById("importJsonFile").click());
   document.getElementById("importJsonFile").addEventListener("change", e=>{
     if(e.target.files && e.target.files[0]) importJSONFile(e.target.files[0]);
   });
 
+  // NEW: Clear Outgoing / Incoming / All
+  document.getElementById("clearOutgoingBtn").addEventListener("click", async ()=>{
+    if(confirm("Delete ALL outgoing transactions? This cannot be undone.")){
+      state.transactions = state.transactions.filter(t=>t.type!=="outgoing");
+      await save();
+    }
+  });
+  document.getElementById("clearIncomingBtn").addEventListener("click", async ()=>{
+    if(confirm("Delete ALL incoming (return) transactions? This cannot be undone.")){
+      state.transactions = state.transactions.filter(t=>t.type!=="return");
+      await save();
+    }
+  });
   document.getElementById("clearAllBtn").addEventListener("click", async ()=>{
-    if(confirm("Delete all employees & transactions?")){
+    if(confirm("Delete ALL employees & transactions? This cannot be undone.")){
       state = {employees:[], transactions:[]};
       await save();
     }

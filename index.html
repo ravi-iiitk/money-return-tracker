@@ -11,7 +11,8 @@
     html,body{height:100%}
     .glass{backdrop-filter:saturate(180%) blur(8px)}
   </style>
-  <!-- Tesseract.js (OCR in the browser) -->
+
+  <!-- Tesseract.js (OCR) -->
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 
   <!-- Firebase compat SDKs (no bundler required) -->
@@ -20,15 +21,15 @@
   <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
 
   <script>
-    // TODO: replace with YOUR config from Firebase console
+    // 🔁 REPLACE with YOUR Firebase project config
     const firebaseConfig = {
-          apiKey: "AIzaSyDuMw1wk70w38NQf_1pQZbN-Y1z7x4qTaM",
-          authDomain: "money-tracker-41c53.firebaseapp.com",
-          projectId: "money-tracker-41c53",
-          storageBucket: "money-tracker-41c53.firebasestorage.app",
-          messagingSenderId: "974884316198",
-          appId: "1:974884316198:web:af8107569eea553679f2e7",
-          measurementId: "G-6REWB0V3LC"
+      apiKey: "YOUR_API_KEY",
+      authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+      projectId: "YOUR_PROJECT_ID",
+      storageBucket: "YOUR_PROJECT_ID.appspot.com",
+      messagingSenderId: "YOUR_SENDER_ID",
+      appId: "YOUR_APP_ID",
+      measurementId: "YOUR_MEASUREMENT_ID"
     };
     firebase.initializeApp(firebaseConfig);
   </script>
@@ -44,6 +45,12 @@
         <span id="uidBadge" class="hidden md:inline-block text-xs text-gray-500 ml-2"></span>
       </div>
       <div class="flex gap-2 flex-wrap items-center">
+        <button id="googleSignIn" class="px-3 py-1.5 rounded-lg border hover:bg-gray-100">
+          Sign in with Google
+        </button>
+        <button id="signOut" class="px-3 py-1.5 rounded-lg border hover:bg-gray-100 hidden">
+          Sign out
+        </button>
         <button id="exportJsonBtn" class="px-3 py-1.5 rounded-lg border hover:bg-gray-100">Export JSON</button>
         <button id="importJsonBtn" class="px-3 py-1.5 rounded-lg border hover:bg-gray-100">Import JSON</button>
         <input id="importJsonFile" type="file" accept="application/json" class="hidden" />
@@ -137,7 +144,9 @@
             <button id="importRetBtn" class="px-3 py-1.5 rounded-lg border hover:bg-gray-100">Import Incoming (CSV)</button>
             <input id="importRetFile" type="file" accept=".csv,text/csv" class="hidden" />
 
-            <button id="clearAllBtn" class="px-3 py-1.5 rounded-lg border text-red-600 hover:bg-red-50">Clear All Data</button>
+            <button id="clearOutgoingBtn" class="px-3 py-1.5 rounded-lg border text-red-600 hover:bg-red-50">Clear Outgoing</button>
+            <button id="clearIncomingBtn" class="px-3 py-1.5 rounded-lg border text-red-600 hover:bg-red-50">Clear Incoming</button>
+            <button id="clearAllBtn" class="px-3 py-1.5 rounded-lg border text-red-700 hover:bg-red-100">Clear All Data</button>
           </div>
         </div>
       </div>
