@@ -1,27 +1,29 @@
 /* ============================================================================
-   Screenshot Money Tracker – FULL app.js
+   Screenshot Money Tracker – FULL app.js (with image upload)
    - Workspace-based Firestore persistence (workspaces/{code})
    - OCR ingestion + manual edit
    - CSV import/export (employees, outgoing, incoming)
    - Statement matcher (CSV/XLSX/PDF/TXT) for Incoming (returns)
    - Mobile-safe behaviors
-   NOTE: Keep index.html as provided; it wires all the buttons/inputs correctly.
 ============================================================================ */
 
 /* --------------------------- Firebase bootstrap --------------------------- */
 /* Put your real config here (same as you already have in your working app) */
 const firebaseConfig = {
-    apiKey: "AIzaSyDuMw1wk70w38NQf_1pQZbN-Y1z7x4qTaM",
-    authDomain: "money-tracker-41c53.firebaseapp.com",
-    projectId: "money-tracker-41c53",
-    storageBucket: "money-tracker-41c53.firebasestorage.app",
-    messagingSenderId: "974884316198",
-    appId: "1:974884316198:web:af8107569eea553679f2e7",
-    measurementId: "G-6REWB0V3LC"
+  apiKey: "AIzaSyDuMw1wk70w38NQf_1pQZbN-Y1z7x4qTaM",
+  authDomain: "money-tracker-41c53.firebaseapp.com",
+  projectId: "money-tracker-41c53",
+  storageBucket: "money-tracker-41c53.firebasestorage.app",
+  messagingSenderId: "974884316198",
+  appId: "1:974884316198:web:af8107569eea553679f2e7",
+  measurementId: "G-6REWB0V3LC"
 };
 firebase.initializeApp(firebaseConfig);
 const db   = firebase.firestore();
 const auth = firebase.auth();
+const supabaseUrl = "https://shopetkuocppkrkgoqxd.supabase.co";   // from dashboard
+const supabaseKey ="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNob3BldGt1b2NwcGtya2dvcXhkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTgzNTI4MzMsImV4cCI6MjA3MzkyODgzM30.hTGOBPmAk1MjkKR5nVJ264MhCtmMukUop_zfylvHnUE";                      // from dashboard
+const supabase = window.supabase.createClient(supabaseUrl, supabaseKey);
 
 /* ------------------------------- App state -------------------------------- */
 let state = { employees: [], transactions: [] };
@@ -52,6 +54,26 @@ function uid(){ return Math.random().toString(36).slice(2); }
 function el(tag, cls="", html=""){ const e=document.createElement(tag); if(cls) e.className=cls; if(html) e.innerHTML=html; return e; }
 function fmtMoney(n){ if(n==null || isNaN(n)) return "₹ 0"; return "₹ " + Number(n).toLocaleString(undefined,{maximumFractionDigits:2}); }
 function parseNumber(s){ if(!s) return NaN; return parseFloat(String(s).replace(/[^\d.]/g,"")); }
+
+// Upload the transaction image to Firebase Storage and return a download URL
+async function uploadTxnImage(file, txnId){
+  const ws = workspaceId || "default";
+  const ext = (file.name?.split('.').pop() || "jpg").toLowerCase();
+  const path = `${ws}/${txnId}.${ext}`;
+
+  // Upload
+  const { error } = await supabase
+    .storage
+    .from("screens")
+    .upload(path, file, { contentType: file.type || "image/jpeg", upsert: false });
+
+  if (error) throw error;
+
+  // Get public URL
+  const { data } = supabase.storage.from("screens").getPublicUrl(path);
+  return data.publicUrl;
+}
+
 
 /* -------------------------- Firestore workspace --------------------------- */
 function workspaceDoc(){
@@ -125,7 +147,7 @@ async function load(currentToken){
 
 async function initAuth(){
   try { await auth.signInAnonymously(); }
-  catch (err) { showWarn("Anonymous auth failed. Add your GitHub Pages host to Firebase → Auth → Authorized domains."); console.error(err); }
+  catch (err) { showWarn("Anonymous auth failed. Add your host to Firebase → Auth → Authorized domains."); console.error(err); }
 }
 
 /* --------------------------- Workspace selection -------------------------- */
@@ -241,8 +263,8 @@ function importJSONFile(file, inputEl){
 /* ------------------------------- OCR helpers ------------------------------ */
 function detectDirection(text){
   const t = text.toLowerCase();
-  const isReturn   = /(credited|received|payment received|incoming)/.test(t);
-  const isOutgoing = /(debited|paid to|payment to|sent to|transfer to|outgoing)/.test(t);
+  const isReturn   = /(credited|received|payment received|incoming)/i.test(t);
+  const isOutgoing = /(debited|paid to|payment to|sent to|transfer to|outgoing)/i.test(t);
   if(isReturn && !isOutgoing) return "return";
   if(isOutgoing && !isReturn) return "outgoing";
   return "unknown";
@@ -481,6 +503,17 @@ function renderTransactions(){
         <td class="p-2">${t.mode || "-"}</td>
         <td class="p-2">${t.ref || "-"}</td>
         <td class="p-2">${t.note || ""}</td>
+        <!-- NEW Image cell -->
+        <td class="p-2">
+          ${
+            t.imageUrl
+            ? `<a href="${t.imageUrl}" target="_blank" class="inline-flex items-center gap-2">
+                 <img src="${t.imageUrl}" class="w-10 h-10 object-cover rounded border" alt="txn"/>
+                 <span class="text-xs underline">View</span>
+               </a>`
+            : `<span class="text-xs text-gray-400">—</span>`
+          }
+        </td>
         <td class="p-2">
           <button class="px-2 py-1 rounded border hover:bg-gray-100" data-id="${t.id}" data-act="edit" ${controlsDisabled?'disabled':''}>Edit</button>
           <button class="px-2 py-1 rounded border text-red-700 hover:bg-red-50" data-id="${t.id}" data-act="del" ${controlsDisabled?'disabled':''}>Delete</button>
@@ -496,6 +529,17 @@ function renderTransactions(){
         <td class="p-2">${t.ref || "-"}</td>
         <td class="p-2">${t.source || ""}</td>
         <td class="p-2">${t.note || ""}</td>
+        <!-- NEW Image cell -->
+        <td class="p-2">
+          ${
+            t.imageUrl
+            ? `<a href="${t.imageUrl}" target="_blank" class="inline-flex items-center gap-2">
+                 <img src="${t.imageUrl}" class="w-10 h-10 object-cover rounded border" alt="txn"/>
+                 <span class="text-xs underline">View</span>
+               </a>`
+            : `<span class="text-xs text-gray-400">—</span>`
+          }
+        </td>
         <td class="p-2">
           <button class="px-2 py-1 rounded border hover:bg-gray-100" data-id="${t.id}" data-act="edit" ${controlsDisabled?'disabled':''}>Edit</button>
           <button class="px-2 py-1 rounded border text-red-700 hover:bg-red-50" data-id="${t.id}" data-act="del" ${controlsDisabled?'disabled':''}>Delete</button>
@@ -520,9 +564,13 @@ function renderTransactions(){
   }));
 }
 
-function renderAll(){ renderEmployees(); renderSummary(); renderTransactions(); }
+function renderAll(){
+  renderEmployees();
+  renderSummary();
+  renderTransactions();
+}
 
-/* ------------------------------- Edit dialog ------------------------------ */
+/* ----------------------------- Edit dialog ------------------------------- */
 function openEditDialog(t){
   const overlay = el("div","fixed inset-0 bg-black/30 grid place-items-center p-4");
   const card = el("div","bg-white rounded-2xl p-5 max-w-lg w-full space-y-3");
@@ -565,6 +613,14 @@ function openEditDialog(t){
       <label class="text-sm col-span-2">Note
         <input id="edNote" class="w-full border rounded px-2 py-1" value="${t.note || ''}">
       </label>
+      ${ t.imageUrl ? `
+        <div class="col-span-2">
+          <div class="text-sm text-gray-600 mb-1">Attached Image</div>
+          <a href="${t.imageUrl}" target="_blank" class="inline-flex items-center gap-2">
+            <img src="${t.imageUrl}" class="w-16 h-16 object-cover rounded border" alt="txn"/>
+            <span class="text-xs underline">Open full image</span>
+          </a>
+        </div>` : "" }
     </div>
     <div class="flex justify-end gap-2">
       <button id="edCancel" class="px-3 py-1.5 rounded border">Cancel</button>
@@ -593,53 +649,13 @@ function openEditDialog(t){
   });
 }
 
-/* -------------------- File selection / OCR pipeline UI -------------------- */
-function renderSelectedFiles(){
-  const wrap = document.getElementById("selectedFiles");
-  const input = document.getElementById("fileInput");
-  if(!wrap || !input) return;
-  const files = input.files;
-  if(!files || !files.length){
-    wrap.innerHTML = `<div class="text-sm text-gray-500">No files selected.</div>`;
-    return;
-  }
-  let totalBytes = 0; const cards = [];
-  for(let i=0;i<files.length;i++){
-    const f = files[i]; totalBytes += f.size || 0;
-    const url = URL.createObjectURL(f);
-    const name = f.name || `image-${i+1}`;
-    cards.push(`
-      <div class="border rounded-lg p-2 flex items-center gap-2 bg-white">
-        <img src="${url}" class="w-12 h-12 object-cover rounded border" alt="preview">
-        <div class="min-w-0 flex-1">
-          <div class="text-sm truncate" title="${name}">${name}</div>
-          <div class="text-xs text-gray-500">${(f.size/1024).toFixed(1)} KB</div>
-        </div>
-        <button class="px-2 py-1 text-xs rounded border hover:bg-gray-100" onclick="removeSelectedFile(${i})">Remove</button>
-      </div>
-    `);
-  }
-  const totalStr = (totalBytes/1024).toFixed(1) + " KB";
-  wrap.innerHTML = `
-    <div class="flex items-center justify-between mb-2">
-      <div class="text-sm font-medium">${files.length} file(s) selected — ${totalStr}</div>
-      <div class="flex gap-2">
-        <button class="px-2 py-1 text-xs rounded border hover:bg-gray-100" onclick="clearSelectedFiles()">Clear selection</button>
-      </div>
-    </div>
-    <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-2">${cards.join("")}</div>
-  `;
+/* ------------------------------- UI wiring -------------------------------- */
+function renderSelectedFiles(files){
+  const sel = document.getElementById("selectedFiles");
+  if(!sel) return;
+  if(!files || !files.length){ sel.innerHTML=""; return; }
+  sel.innerHTML = `<div class="text-sm text-gray-600">${files.length} file(s) selected.</div>`;
 }
-window.removeSelectedFile = function(idx){
-  const input = document.getElementById("fileInput");
-  try{
-    const dt = new DataTransfer();
-    for(let i=0;i<input.files.length;i++){ if(i!==idx) dt.items.add(input.files[i]); }
-    input.files = dt.files;
-    renderSelectedFiles();
-  }catch(e){ alert("Browser doesn't allow removing individual files. Use Clear selection."); }
-};
-window.clearSelectedFiles = function(){ const input = document.getElementById("fileInput"); input.value = ""; renderSelectedFiles(); };
 
 async function ocrImage(file){
   const worker = await Tesseract.createWorker();
@@ -647,7 +663,8 @@ async function ocrImage(file){
   await worker.terminate();
   return text;
 }
-function makeParsedCard(parsed, imgUrl){
+
+function makeParsedCard(parsed, imgUrl, file){
   const card = el("div","border rounded-xl p-3 bg-white shadow-sm");
   card.innerHTML = `
     <div class="flex gap-3">
@@ -671,44 +688,43 @@ function makeParsedCard(parsed, imgUrl){
         <label class="text-xs">Mode
           <input class="w-full border rounded px-2 py-1" data-f="mode" value="${parsed.mode ?? ""}">
         </label>
-        <label class="text-xs">Date
+        <label class="text-xs col-span-2">Date
           <input class="w-full border rounded px-2 py-1" data-f="date" value="${parsed.date ?? ""}">
         </label>
         <label class="text-xs">Time
           <input class="w-full border rounded px-2 py-1" data-f="time" value="${parsed.time ?? ""}">
         </label>
-        <label class="text-xs col-span-2">Ref
+        <label class="text-xs">Ref
           <input class="w-full border rounded px-2 py-1" data-f="ref" value="${parsed.ref ?? ""}">
         </label>
-        <label class="text-xs">Source (returns; CA/bank)
-          <input class="w-full border rounded px-2 py-1" data-f="source" value="${parsed.counterparty ?? ""}">
-        </label>
-        <label class="text-xs col-span-2">Counterparty (from OCR)
-          <input class="w-full border rounded px-2 py-1" value="${parsed.counterparty ?? ""}" disabled>
+        <label class="text-xs">Return Source
+          <input class="w-full border rounded px-2 py-1" data-f="source" value="">
         </label>
         <label class="text-xs col-span-2">Note
           <input class="w-full border rounded px-2 py-1" data-f="note" value="">
         </label>
       </div>
     </div>
-    <div class="flex justify-end gap-2 mt-2">
-      <button class="px-3 py-1.5 rounded border">Discard</button>
-      <button class="px-3 py-1.5 rounded bg-indigo-600 text-white" data-act="save">Save</button>
+    <div class="mt-2 flex justify-end gap-2">
+      <button class="px-3 py-1.5 rounded border" data-act="cancel">Discard</button>
+      <button class="px-3 py-1.5 rounded bg-emerald-600 text-white" data-act="save">Save</button>
     </div>
   `;
+
   const typeSel = card.querySelector('[data-f="type"]');
   const empSel  = card.querySelector('[data-f="employeeId"]');
-  const dirSel  = document.getElementById("directionSelect")?.value || "auto";
-  if(dirSel==="outgoing" || dirSel==="return"){ typeSel.value = dirSel; }
-  else if(parsed.direction==="outgoing" || parsed.direction==="return"){ typeSel.value = parsed.direction; }
-  const preEmp = document.getElementById("employeeSelect")?.value || parsed.employeeId || "";
-  if(preEmp) empSel.value = preEmp;
+  // Pre-fill type/employee from OCR guess
+  const dirSel = document.getElementById("directionSelect");
+  const dir = dirSel?.value === "auto" ? (parsed.direction || "outgoing") : dirSel.value;
+  typeSel.value = dir === "return" ? "return" : "outgoing";
+  if(parsed.employeeId){ empSel.value = parsed.employeeId; }
 
-  card.querySelector("button").addEventListener("click", ()=> card.remove());
+  card.querySelector('[data-act="cancel"]').addEventListener("click", ()=> card.remove());
   card.querySelector('[data-act="save"]').addEventListener("click", async ()=>{
     if(controlsDisabled) return showWarn("Pick a workspace first.");
+    const id = uid();
     const rec = {
-      id: uid(),
+      id,
       type: typeSel.value,
       employeeId: empSel.value || "",
       amount: parseNumber(card.querySelector('[data-f="amount"]').value || 0),
@@ -719,10 +735,22 @@ function makeParsedCard(parsed, imgUrl){
       source: card.querySelector('[data-f="source"]').value.trim(),
       note: card.querySelector('[data-f="note"]').value.trim(),
       cutOverride: null,
-      createdAt: Date.now()
+      createdAt: Date.now(),
+      imageUrl: "" // NEW
     };
     if(!rec.amount || isNaN(rec.amount)){ alert("Amount missing/invalid"); return; }
     if(rec.type==="outgoing" && !rec.employeeId){ alert("Please choose an employee for outgoing"); return; }
+
+    // Upload image and attach URL (non-blocking on failure)
+    try{
+      if(file){
+        rec.imageUrl = await uploadTxnImage(file, id);
+      }
+    }catch(err){
+      console.error("Image upload failed; saving without image", err);
+      showWarn("Could not upload image; saved transaction without image.");
+    }
+
     state.transactions.push(rec);
     card.remove();
     await readyPromise; await save();
@@ -731,343 +759,105 @@ function makeParsedCard(parsed, imgUrl){
   return card;
 }
 
-/* ------------------------------ Statement matcher ------------------------- */
-function norm(s){ return String(s||"").toLowerCase().trim(); }
-function mapRowToEntry(row){
-  const keys = Object.keys(row);
-  const by = k => row[keys.find(h => norm(h).includes(k))];
-
-  const rawDate = by("date") || by("txn date") || by("value date") || by("posting");
-  const rawAmt  = by("amount") || by("credit") || by("cr amount") || by("deposit");
-  const rawDesc = by("description") || by("narration") || by("remark") || by("details");
-  const rawRef  = by("utr") || by("ref") || by("reference") || by("txn id") || by("upi ref");
-  const rawMode = by("mode") || by("channel") || by("type");
-
-  let dt = String(rawDate||"").trim();
-  let date = dt.match(/\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}/) ? dt :
-             dt.match(/\d{1,2}\s+[A-Za-z]{3,9}\s+\d{2,4}/) ? dt : "";
-
-  let amt = rawAmt;
-  if(amt==null){
-    const cr = by("credit"), dr = by("debit");
-    if(cr && Number(cr)>0) amt = cr; else if(dr && Number(dr)>0) amt = dr;
+function employeeNameById(id){
+  const e = state.employees.find(x => x.id === id);
+  return e ? e.name : "";
+}
+function findOrCreateEmployeeIdByName(name){
+  const n = (name || "").trim();
+  if(!n) return "";
+  let e = state.employees.find(x => x.name.toLowerCase() === n.toLowerCase());
+  if(!e){
+    e = { id: uid(), name: n, cutType: "percent", cutValue: 10 };
+    state.employees.push(e);
   }
-  const amount = parseFloat(String(amt||"").replace(/[^\d.]/g,"")) || null;
-
-  const desc = String(rawDesc||"").trim();
-  const ref  = (String(rawRef||"").match(/[A-Z0-9]{8,}/i)||[])[0] || "";
-  const mode = String(rawMode||"").trim() ||
-               (desc.match(/\b(UPI|NEFT|IMPS|RTGS|PhonePe|GPay|Paytm)\b/i)||[])[0] || "";
-
-  if(!amount) return null;
-  return { date, amount, desc, ref, mode };
-}
-function parseStatementCSV(text){
-  const rows = parseCsv(text);
-  return rows.map(mapRowToEntry).filter(Boolean);
-}
-async function parseStatementXLSX(file){
-  const data = await file.arrayBuffer();
-  const wb = XLSX.read(data, { type:'array' });
-  const ws = wb.Sheets[wb.SheetNames[0]];
-  const json = XLSX.utils.sheet_to_json(ws, { defval:"" });
-  return json.map(mapRowToEntry).filter(Boolean);
-}
-function parseLinesToEntries(lines){
-  const entries = [];
-  for(const ln of lines){
-    const date = (ln.match(/\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}/) || ln.match(/\d{1,2}\s+[A-Za-z]{3,9}\s+\d{2,4}/) || [""])[0];
-    const amtM = ln.match(/(?:₹|rs\.?|inr)?\s*([0-9][0-9,]*(?:\.\d{1,2})?)/i);
-    const amount = amtM ? parseFloat(amtM[1].replace(/[^\d.]/g,"")) : null;
-    const ref = (ln.match(/[A-Z0-9]{10,}/i)||[])[0] || "";
-    const mode = (ln.match(/\b(UPI|NEFT|IMPS|RTGS|PhonePe|GPay|Paytm)\b/i)||[])[0] || "";
-    if(amount) entries.push({ date, amount, desc: ln.trim(), ref, mode });
-  }
-  return entries;
-}
-async function parseStatementTXT(file){
-  const text = await file.text();
-  return parseLinesToEntries(text.split(/\r?\n/));
-}
-async function parseStatementPDF(file){
-  const buf = await file.arrayBuffer();
-  const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
-  let lines = [];
-  for(let p=1;p<=pdf.numPages;p++){
-    const page = await pdf.getPage(p);
-    const content = await page.getTextContent();
-    const txt = content.items.map(it => it.str).join(" ");
-    lines = lines.concat( txt.split(/\r?\n|(?<=\s)\s{2,}/) );
-  }
-  return parseLinesToEntries(lines);
-}
-function applyStatementMatches(entries){
-  const toKey = d => {
-    if(!d) return "";
-    const m = d.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
-    if(m){ const [_,dd,mm,yy]=m; const y = yy.length===2 ? ("20"+yy) : yy; return `${y}-${mm.padStart(2,"0")}-${dd.padStart(2,"0")}`; }
-    const m2 = d.match(/(\d{1,2})\s+([A-Za-z]{3,9})\s+(\d{2,4})/);
-    if(m2){
-      const map={jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12};
-      const dd = m2[1].padStart(2,"0"), mm = String(map[m2[2].slice(0,3).toLowerCase()]||"").padStart(2,"0");
-      const y = m2[3].length===2 ? ("20"+m2[3]) : m2[3];
-      return `${y}-${mm}-${dd}`;
-    }
-    return "";
-  };
-  const byAmount = new Map();
-  for(const e of entries){
-    if(!byAmount.has(e.amount)) byAmount.set(e.amount, []);
-    byAmount.get(e.amount).push(e);
-  }
-  const within2days = (a,b) => {
-    if(!a || !b) return false;
-    const da = new Date(a), db = new Date(b);
-    return Math.abs(da - db) <= 2*24*60*60*1000;
-  };
-
-  let updates = 0;
-  state.transactions.forEach(t=>{
-    if(t.type !== "return") return;
-    const candidates = byAmount.get(t.amount) || [];
-    if(!candidates.length) return;
-    const tKey = toKey(t.date);
-    const hit = candidates.find(c => within2days(tKey, toKey(c.date)));
-    if(!hit) return;
-    let changed = false;
-    if(!t.ref && hit.ref){ t.ref = hit.ref; changed = true; }
-    if(!t.mode && hit.mode){ t.mode = hit.mode; changed = true; }
-    if(!t.source && hit.desc){ t.source = hit.desc.slice(0,140); changed = true; }
-    if(changed) updates++;
-  });
-  return updates;
-}
-function wireStatementImport(){
-  const btn  = document.getElementById("importStmtBtn");
-  const file = document.getElementById("importStmtFile");
-  if(!btn || !file) return;
-
-  btn.addEventListener("click", ()=>{
-    if(controlsDisabled) return showWarn("Pick a workspace first.");
-    file.click();
-  });
-
-  file.addEventListener("change", async (e)=>{
-    const f = e.target.files && e.target.files[0];
-    if(!f) return;
-    try{
-      let entries = [];
-      const name = f.name.toLowerCase();
-      if(name.endsWith(".csv")){
-        const text = await f.text();
-        entries = parseStatementCSV(text);
-      }else if(name.endsWith(".xls") || name.endsWith(".xlsx")){
-        entries = await parseStatementXLSX(f);
-      }else if(name.endsWith(".pdf")){
-        entries = await parseStatementPDF(f);
-      }else if(name.endsWith(".txt")){
-        entries = await parseStatementTXT(f);
-      }else{
-        alert("Unsupported file. Use CSV / XLSX / PDF / TXT.");
-        e.target.value="";
-        return;
-      }
-
-      if(!entries.length){ alert("Couldn’t find transactions in the statement."); e.target.value=""; return; }
-
-      const updated = applyStatementMatches(entries);
-      if(updated>0){
-        await readyPromise; await save();
-        alert(`Matched & updated ${updated} return transaction(s).`);
-      }else{
-        alert("No matching returns found by amount+date.");
-      }
-    }catch(err){
-      console.error(err);
-      alert("Failed to read statement.");
-    }finally{
-      try{ e.target.value=""; }catch(_){}
-    }
-  });
+  return e.id;
 }
 
-/* --------------------------------- Init ---------------------------------- */
-async function init(){
-  setControlsEnabled(false);
-  await initAuth();
 
-  // Workspace selection priority
-  const fromHash = getWorkspaceFromHash();
-  const fromLS   = (()=>{ try{return localStorage.getItem(WS_KEY);}catch(_){return null;} })();
-  if(fromHash){ await setWorkspace(fromHash); }
-  else if(fromLS){ await setWorkspace(fromLS); }
-  else { openWorkspaceModal(); }
+/* ------------------------------ App bootstrap ----------------------------- */
+function init(){
+  // Auth + workspace
+  initAuth();
 
-  // Workspace modal controls
+  // Workspace controls
   document.getElementById("switchWorkspaceBtn")?.addEventListener("click", openWorkspaceModal);
-  document.getElementById("wsGenerate")?.addEventListener("click", ()=>{
-    const i = document.getElementById("wsInput"); if(i) i.value = randomCode();
-  });
   document.getElementById("wsCancel")?.addEventListener("click", closeWorkspaceModal);
-  document.getElementById("wsConfirm")?.addEventListener("click", async ()=>{
-    const i = document.getElementById("wsInput");
-    const code = (i?.value||"").trim();
-    if(!code){ document.getElementById("wsError")?.classList.remove("hidden"); return; }
-    closeWorkspaceModal(); await setWorkspace(code);
+  document.getElementById("wsGenerate")?.addEventListener("click", ()=>{
+    document.getElementById("wsInput").value = randomCode();
+  });
+  document.getElementById("wsConfirm")?.addEventListener("click", ()=>{
+    const v = document.getElementById("wsInput").value.trim();
+    if(!v) { document.getElementById("wsError").classList.remove("hidden"); return; }
+    closeWorkspaceModal(); setWorkspace(v);
   });
 
-  // File select & preview
-  const dropZone   = document.getElementById("dropZone");
-  const fileInput  = document.getElementById("fileInput");
-  const processBtn = document.getElementById("processBtn");
-  const parsedList = document.getElementById("parsedList");
-  const progress   = document.getElementById("progress");
+  const wsFromHash = getWorkspaceFromHash();
+  const wsFromLS   = (()=>{ try{ return localStorage.getItem(WS_KEY); }catch(_){ return null; } })();
+  const initialWs  = wsFromHash || wsFromLS || randomCode();
+  setWorkspace(initialWs);
 
-  dropZone?.addEventListener("click", ()=> { if(!controlsDisabled) fileInput?.click(); else showWarn("Pick a workspace first."); });
-  fileInput?.addEventListener("change", ()=> { if(!controlsDisabled) renderSelectedFiles(); else fileInput.value=""; });
-
-  dropZone?.addEventListener("dragover", e=>{ e.preventDefault(); if(!controlsDisabled) dropZone.classList.add("bg-gray-50"); });
-  dropZone?.addEventListener("dragleave", ()=> dropZone.classList.remove("bg-gray-50"));
-  dropZone?.addEventListener("drop", e=>{
-    e.preventDefault();
-    if(controlsDisabled) return showWarn("Pick a workspace first.");
-    if(fileInput){ fileInput.files = e.dataTransfer.files; }
-    dropZone.classList.remove("bg-gray-50"); renderSelectedFiles();
+  // Import/Export
+  document.getElementById("exportJsonBtn")?.addEventListener("click", exportJSON);
+  const importJsonBtn = document.getElementById("importJsonBtn");
+  const importJsonFile= document.getElementById("importJsonFile");
+  importJsonBtn?.addEventListener("click", ()=> importJsonFile.click());
+  importJsonFile?.addEventListener("change", e=>{
+    const f = e.target.files?.[0];
+    if(f) importJSONFile(f, importJsonFile);
   });
-  renderSelectedFiles();
 
-  // Employees add
+  // Employees
   document.getElementById("addEmployeeBtn")?.addEventListener("click", async ()=>{
     if(controlsDisabled) return showWarn("Pick a workspace first.");
-    state.employees.push({id:uid(), name:"New Employee", cutType:"percent", cutValue:0});
+    state.employees.push({ id: uid(), name:"", cutType:"percent", cutValue:10 });
+    await readyPromise; await save();
+  });
+  document.getElementById("importEmpBtn")?.addEventListener("click", ()=> document.getElementById("importEmpFile").click());
+  document.getElementById("importEmpFile")?.addEventListener("change", async e=>{
+    if(controlsDisabled) return showWarn("Pick a workspace first.");
+    const f=e.target.files?.[0]; if(!f) return;
+    const t = await f.text();
+    const rows = parseCsv(t);
+    rows.forEach(r=>{
+      state.employees.push({
+        id: uid(),
+        name: r.name || r.employee || "",
+        cutType: (r.cuttype || r.cut_type || "percent").toLowerCase()==="flat" ? "flat":"percent",
+        cutValue: parseFloat(r.cutvalue || r.cut_value || r.cut || "10")
+      });
+    });
+    e.target.value="";
     await readyPromise; await save();
   });
 
-  // JSON import/export
-  document.getElementById("exportJsonBtn")?.addEventListener("click", exportJSON);
-  document.getElementById("importJsonBtn")?.addEventListener("click", ()=> {
-    if(controlsDisabled) return showWarn("Pick a workspace first.");
-    document.getElementById("importJsonFile")?.click();
+  // File upload + OCR
+  const dz = document.getElementById("dropZone");
+  const input = document.getElementById("fileInput");
+  dz?.addEventListener("click", ()=> input.click());
+  dz?.addEventListener("dragover", e=>{ e.preventDefault(); dz.classList.add("ring-2","ring-emerald-400"); });
+  dz?.addEventListener("dragleave", ()=> dz.classList.remove("ring-2","ring-emerald-400"));
+  dz?.addEventListener("drop", e=>{
+    e.preventDefault(); dz.classList.remove("ring-2","ring-emerald-400");
+    const files = Array.from(e.dataTransfer.files || []).filter(f=> f.type.startsWith("image/"));
+    input.files = (new DataTransfer()).files; // reset
+    renderSelectedFiles(files);
+    input.__picked = files;
   });
-  document.getElementById("importJsonFile")?.addEventListener("change", e=>{
-    const f=e.target.files && e.target.files[0];
-    if(f) importJSONFile(f, e.target);
-  });
-
-  // CSV EXPORTS
-  document.getElementById("exportEmpBtn")?.addEventListener("click", ()=>{
-    if(controlsDisabled) return showWarn("Pick a workspace first.");
-    const per = computeSummary();
-    const rows = Object.values(per).map(e=>({
-      employee: e.name, cut_type: e.cutType, cut_value: e.cutValue,
-      total_sent: e.totalSent, total_cut: e.totalCut, total_expected: e.totalExpected
-    }));
-    const csv = rows.length ? toCsv(rows) : ""; if(!csv) return alert("Nothing to export");
-    downloadCsv(csv, `employees-${workspaceId||"ws"}.csv`);
-  });
-  document.getElementById("exportOutBtn")?.addEventListener("click", ()=>{
-    if(controlsDisabled) return showWarn("Pick a workspace first.");
-    const per = computeSummary(); const rows=[];
-    Object.values(per).forEach(e=> e.outgoings.forEach(o=> rows.push({
-      date:o.date||"", time:o.time||"", employee:e.name, amount:o.amount,
-      cut:o.computedCut, expected_return:o.expectedReturn, mode:o.mode||"",
-      ref:o.ref||"", note:o.note||""
-    })));
-    const csv = rows.length ? toCsv(rows) : ""; if(!csv) return alert("Nothing to export");
-    downloadCsv(csv, `outgoing-${workspaceId||"ws"}.csv`);
-  });
-  document.getElementById("exportRetBtn")?.addEventListener("click", ()=>{
-    if(controlsDisabled) return showWarn("Pick a workspace first.");
-    const rows = state.transactions.filter(t=>t.type==="return").map(r=>({
-      date:r.date||"", time:r.time||"", amount:r.amount, mode:r.mode||"",
-      ref:r.ref||"", source:r.source||"", note:r.note||""
-    }));
-    const csv = rows.length ? toCsv(rows) : ""; if(!csv) return alert("Nothing to export");
-    downloadCsv(csv, `incoming-${workspaceId||"ws"}.csv`);
+  input?.addEventListener("change", e=>{
+    const files = Array.from(e.target.files || []);
+    renderSelectedFiles(files);
+    input.__picked = files;
   });
 
-  // CSV IMPORTS
-  const bindCsvImport = (btnId, fileId, handler) => {
-    const btn  = document.getElementById(btnId);
-    const file = document.getElementById(fileId);
-    btn?.addEventListener("click", ()=> controlsDisabled ? showWarn("Pick a workspace first.") : file?.click());
-    file?.addEventListener("change", e=>{
-      const f=e.target.files && e.target.files[0]; if(!f) return;
-      const reader=new FileReader();
-      reader.onload=async ev=>{
-        if(controlsDisabled) return showWarn("Pick a workspace first.");
-        await readyPromise; handler(ev.target.result); await save();
-        try{ e.target.value=""; }catch(_){}
-      };
-      reader.readAsText(f);
-    });
-  };
-
-  bindCsvImport("importEmpBtn","importEmpFile",(csv)=>{
-    parseCsv(csv).forEach(r=>{
-      const name = r.employee || r.name; if(!name) return;
-      const existing = state.employees.find(e=>e.name.toLowerCase()===name.toLowerCase());
-      const emp = existing || { id: uid(), name, cutType:"percent", cutValue:0 };
-      emp.cutType  = (r.cut_type || emp.cutType || "percent").toLowerCase()==="flat" ? "flat":"percent";
-      emp.cutValue = parseFloat(r.cut_value || emp.cutValue || 0);
-      if(!existing) state.employees.push(emp);
-    });
-  });
-
-  bindCsvImport("importOutBtn","importOutFile",(csv)=>{
-    parseCsv(csv).forEach(r=>{
-      const amount = parseFloat(r.amount||0); if(!amount) return;
-      const name = r.employee || r.name || ""; let empId="";
-      if(name){
-        const found=state.employees.find(e=>e.name.toLowerCase()===name.toLowerCase());
-        if(found) empId=found.id; else { const emp={id:uid(), name, cutType:"percent", cutValue:0}; state.employees.push(emp); empId=emp.id; }
-      }
-      state.transactions.push({
-        id:uid(), type:"outgoing", employeeId:empId, amount,
-        mode:r.mode||"", date:r.date||"", time:r.time||"", ref:r.ref||"", note:r.note||"",
-        cutOverride: r.cut?parseFloat(r.cut):null, createdAt:Date.now()
-      });
-    });
-  });
-
-  bindCsvImport("importRetBtn","importRetFile",(csv)=>{
-    parseCsv(csv).forEach(r=>{
-      const amount=parseFloat(r.amount||0); if(!amount) return;
-      state.transactions.push({
-        id:uid(), type:"return", amount,
-        mode:r.mode||"", date:r.date||"", time:r.time||"", ref:r.ref||"",
-        source:r.source||"", note:r.note||"", createdAt:Date.now()
-      });
-    });
-  });
-
-  // Clear groups
-  document.getElementById("clearOutgoingBtn")?.addEventListener("click", async ()=>{
+  document.getElementById("processBtn")?.addEventListener("click", async ()=>{
     if(controlsDisabled) return showWarn("Pick a workspace first.");
-    if(confirm("Delete ALL outgoing transactions in this workspace?")) {
-      await readyPromise; state.transactions = state.transactions.filter(t=>t.type!=="outgoing"); await save();
-    }
-  });
-  document.getElementById("clearIncomingBtn")?.addEventListener("click", async ()=>{
-    if(controlsDisabled) return showWarn("Pick a workspace first.");
-    if(confirm("Delete ALL incoming (return) transactions in this workspace?")) {
-      await readyPromise; state.transactions = state.transactions.filter(t=>t.type!=="return"); await save();
-    }
-  });
-  document.getElementById("clearAllBtn")?.addEventListener("click", async ()=>{
-    if(controlsDisabled) return showWarn("Pick a workspace first.");
-    if(confirm("Delete ALL employees & transactions in this workspace?")) {
-      await readyPromise; state = {employees:[], transactions:[]}; await save();
-    }
-  });
+    const files = (input.__picked || []).filter(f=> f.type.startsWith("image/"));
+    if(!files.length){ showWarn("Choose one or more screenshots first."); return; }
 
-  // OCR flow
-  processBtn?.addEventListener("click", async ()=>{
-    if(controlsDisabled) return showWarn("Pick a workspace first.");
-    const files = fileInput?.files;
-    if(!files || !files.length){ alert("Please choose screenshots"); return; }
-    await readyPromise;
-    progress.textContent = "Running OCR...";
+    const parsedList = document.getElementById("parsedList");
+    const progress   = document.getElementById("progress");
+    progress.textContent = "Running OCR…";
     parsedList.innerHTML = "";
     let done = 0;
     for(const file of files){
@@ -1075,24 +865,183 @@ async function init(){
         const text = await ocrImage(file);
         const parsed = parseTransactionText(text);
         const url = URL.createObjectURL(file);
-        parsedList.appendChild( makeParsedCard(parsed, url) );
+        parsedList.appendChild( makeParsedCard(parsed, url, file) ); // pass file
       }catch(err){
         console.error(err);
-        parsedList.appendChild( el("div","text-red-600 text-sm",`Failed OCR for ${file.name}`) );
+        parsedList.appendChild( el("div","text-red-600",`Failed to OCR: ${file.name}`) );
       }finally{
         done++; progress.textContent = `Processed ${done}/${files.length}`;
       }
     }
-    progress.textContent += " — review & Save.";
-    try{ fileInput.value=""; }catch(_){}
-    renderSelectedFiles();
+    progress.textContent = "Done.";
   });
 
-  // Statement importer
-  wireStatementImport();
+  // Clear buttons & export/import for transactions (kept from your previous app)
+  document.getElementById("clearOutgoingBtn")?.addEventListener("click", async ()=>{
+    if(controlsDisabled) return showWarn("Pick a workspace first.");
+    state.transactions = state.transactions.filter(t=>t.type!=="outgoing");
+    await readyPromise; await save();
+  });
+  document.getElementById("clearIncomingBtn")?.addEventListener("click", async ()=>{
+    if(controlsDisabled) return showWarn("Pick a workspace first.");
+    state.transactions = state.transactions.filter(t=>t.type!=="return");
+    await readyPromise; await save();
+  });
+  document.getElementById("clearAllBtn")?.addEventListener("click", async ()=>{
+    if(controlsDisabled) return showWarn("Pick a workspace first.");
+    state = { employees: [], transactions: [] };
+    await readyPromise; await save();
+  });
 
-  // initial render
-  renderAll();
+  // TODO: keep/import/export CSV handlers for outgoing/return (your existing ones)
+  // ===== Export / Import buttons =====
+
+// Export Employees (CSV)
+document.getElementById("exportEmpBtn")?.addEventListener("click", () => {
+  const rows = state.employees.map(e => ({
+    name: e.name,
+    cutType: e.cutType,
+    cutValue: e.cutValue
+  }));
+  if(!rows.length){ showWarn("No employees to export."); return; }
+  downloadCsv(toCsv(rows), "employees.csv");
+});
+
+// Export Outgoing (CSV)
+document.getElementById("exportOutBtn")?.addEventListener("click", () => {
+  const rows = state.transactions
+    .filter(t => t.type === "outgoing")
+    .map(t => ({
+      date: t.date || "",
+      employee: employeeNameById(t.employeeId),
+      amount: t.amount ?? "",
+      mode: t.mode || "",
+      ref: t.ref || "",
+      note: t.note || "",
+      imageUrl: t.imageUrl || ""
+    }));
+  if(!rows.length){ showWarn("No outgoing transactions to export."); return; }
+  downloadCsv(toCsv(rows), "outgoing.csv");
+});
+
+// Export Incoming (CSV)
+document.getElementById("exportRetBtn")?.addEventListener("click", () => {
+  const rows = state.transactions
+    .filter(t => t.type === "return")
+    .map(t => ({
+      date: t.date || "",
+      amount: t.amount ?? "",
+      mode: t.mode || "",
+      ref: t.ref || "",
+      source: t.source || "",
+      note: t.note || "",
+      imageUrl: t.imageUrl || ""
+    }));
+  if(!rows.length){ showWarn("No incoming transactions to export."); return; }
+  downloadCsv(toCsv(rows), "incoming.csv");
+});
+
+// Import Outgoing (CSV)
+const importOutInput = document.getElementById("importOutFile");
+document.getElementById("importOutBtn")?.addEventListener("click", () => importOutInput?.click());
+importOutInput?.addEventListener("change", async (e) => {
+  const f = e.target.files?.[0]; if(!f) return;
+  const rows = parseCsv(await f.text()); // headers are lowercased by parseCsv()
+  let count = 0;
+  for(const r of rows){
+    const empName = r.employee || r.name || "";
+    const employeeId = findOrCreateEmployeeIdByName(empName);
+    const id = uid();
+    state.transactions.push({
+      id,
+      type: "outgoing",
+      employeeId,
+      amount: parseNumber(r.amount),
+      mode: r.mode || "",
+      date: r.date || "",
+      time: r.time || "",
+      ref: r.ref || r.reference || "",
+      note: r.note || "",
+      imageUrl: r.imageurl || r.image || "",
+      cutOverride: r.cutoverride ? parseNumber(r.cutoverride) : null,
+      createdAt: Date.now()
+    });
+    count++;
+  }
+  e.target.value = "";
+  await save();
+  showWarn(`Imported ${count} outgoing rows.`);
+});
+
+// Import Incoming (CSV)
+const importRetInput = document.getElementById("importRetFile");
+document.getElementById("importRetBtn")?.addEventListener("click", () => importRetInput?.click());
+importRetInput?.addEventListener("change", async (e) => {
+  const f = e.target.files?.[0]; if(!f) return;
+  const rows = parseCsv(await f.text());
+  let count = 0;
+  for(const r of rows){
+    const id = uid();
+    state.transactions.push({
+      id,
+      type: "return",
+      employeeId: "",                 // not used for returns
+      amount: parseNumber(r.amount),
+      mode: r.mode || "",
+      date: r.date || "",
+      time: r.time || "",
+      ref: r.ref || r.reference || "",
+      source: r.source || "",
+      note: r.note || "",
+      imageUrl: r.imageurl || r.image || "",
+      cutOverride: null,
+      createdAt: Date.now()
+    });
+    count++;
+  }
+  e.target.value = "";
+  await save();
+  showWarn(`Imported ${count} incoming rows.`);
+});
+
 }
 
-window.addEventListener("DOMContentLoaded", init);
+function downloadJSON(data, filename) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function pickCSVFile() {
+  return new Promise(resolve => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".csv";
+    input.onchange = e => resolve(e.target.files[0]);
+    input.click();
+  });
+}
+
+async function parseCSV(file) {
+  const text = await file.text();
+  return text
+    .split("\n")
+    .map(line => line.split(","))
+    .filter(row => row.length > 1); // filter out empty rows
+}
+
+window.addEventListener("load", ()=>{
+  // Auto-open workspace on first load
+  const fromHash = getWorkspaceFromHash();
+  if(!fromHash){
+    openWorkspaceModal();
+    document.getElementById("wsInput").value = (()=>{
+      try{ return localStorage.getItem(WS_KEY) || randomCode(); }catch(_){ return randomCode(); }
+    })();
+  }
+  init();
+});

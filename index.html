@@ -24,10 +24,14 @@
   <!-- XLSX (for statement parser) -->
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 
-  <!-- Firebase compat SDKs (app.js will init) -->
+  <!-- Firebase compat SDKs -->
   <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-check-compat.js"></script>
+  <!-- NEW: Firebase Storage for image uploads -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-storage-compat.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 
 <body class="bg-gradient-to-b from-sky-50 via-white to-indigo-50 text-gray-900">
@@ -104,8 +108,7 @@
 
       <div class="p-5">
         <div class="flex flex-col md:flex-row gap-4">
-          <div id="dropZone"
-               class="flex-1 border-2 border-dashed rounded-xl p-6 text-center cursor-pointer hover:bg-gray-50 bg-white">
+          <div id="dropZone" class="flex-1 border-2 border-dashed rounded-xl p-6 text-center cursor-pointer hover:bg-gray-50 bg-white">
             <input id="fileInput" type="file" accept="image/*" multiple class="hidden" />
             <p class="font-medium">Tap to choose or drag & drop screenshots here</p>
             <p class="text-xs text-gray-500">JPG, PNG, etc.</p>
@@ -134,7 +137,7 @@
       </div>
     </section>
 
-    <!-- Summary / Export / Import -->
+    <!-- Transactions -->
     <section class="bg-white/90 rounded-2xl border shadow-sm">
       <div class="p-5 border-b bg-gradient-to-r from-sky-50 to-indigo-50 rounded-t-2xl">
         <div class="flex items-center justify-between gap-2">
@@ -158,14 +161,9 @@
       </div>
 
       <div class="p-5">
-        <div id="overallTotals" class="grid sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-4"></div>
-        <div id="summaryCards" class="grid sm:grid-cols-2 lg:grid-cols-3 gap-3"></div>
-      </div>
-    </section>
+        <div id="overallTotals" class="grid md:grid-cols-4 gap-3 mb-4"></div>
+        <div id="summaryCards" class="grid md:grid-cols-3 gap-3 mb-6"></div>
 
-    <!-- Tables -->
-    <section class="bg-white/90 rounded-2xl border shadow-sm">
-      <div class="p-5">
         <h3 class="font-semibold mb-2">Outgoing Transactions</h3>
         <div class="overflow-x-auto">
           <table class="min-w-full text-sm">
@@ -179,6 +177,8 @@
                 <th class="text-left p-2">Mode</th>
                 <th class="text-left p-2">Ref</th>
                 <th class="text-left p-2">Note</th>
+                <!-- NEW -->
+                <th class="text-left p-2">Image</th>
                 <th class="text-left p-2">Actions</th>
               </tr>
             </thead>
@@ -197,6 +197,8 @@
                 <th class="text-left p-2">Ref</th>
                 <th class="text-left p-2">Source</th>
                 <th class="text-left p-2">Note</th>
+                <!-- NEW -->
+                <th class="text-left p-2">Image</th>
                 <th class="text-left p-2">Actions</th>
               </tr>
             </thead>
@@ -207,7 +209,7 @@
     </section>
 
     <footer class="text-center text-xs text-gray-500 pb-8">
-      <p>Data is stored per Workspace in Firestore. Use the same code on all devices.</p>
+      <p>Data is stored per Workspace in Firestore. Use the same code on every device.</p>
     </footer>
   </main>
 
